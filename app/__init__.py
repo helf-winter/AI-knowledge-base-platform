@@ -1,0 +1,1 @@
+"""Knowledge platform application package."""

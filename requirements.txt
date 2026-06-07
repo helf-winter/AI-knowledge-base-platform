@@ -1,0 +1,15 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+sqlalchemy==2.0.36
+alembic==1.14.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-multipart==0.0.20
+celery==5.4.0
+redis==5.2.1
+pgvector==0.3.6
+pillow==11.0.0
+pytesseract==0.3.13
+pandas==2.2.3
+openpyxl==3.1.5
+python-docx==1.1.2

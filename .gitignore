@@ -1,0 +1,37 @@
+# environment
+.env
+.env.local
+
+#data/
+data/
+
+#taste-skill-main
+taste-skill-main/
+
+# frontend
+frontend/node_modules
+frontend/.next
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# logs
+*.log
+
+# local db
+knowledge.db
+
+# system
+.DS_Store
+Thumbs.db
+
+#md
+problems.md
+需求文档.md
+项目任务拆解.md
+课题要求.md
+技术方案.md
+视频课程/
