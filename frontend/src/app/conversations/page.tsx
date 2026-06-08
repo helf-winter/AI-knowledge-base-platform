@@ -23,10 +23,15 @@ type ConversationItem = {
   trace_id?: string | null;
 };
 
+function getAuthHeaders() {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function fetchConversations(sessionId?: string) {
   const url = new URL(`${API_BASE}/api/v1/conversation/turns`);
   if (sessionId) url.searchParams.set('session_id', sessionId);
-  const res = await fetch(url.toString());
+  const res = await fetch(url.toString(), { headers: getAuthHeaders() });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '加载会话历史失败');

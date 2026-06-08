@@ -47,11 +47,26 @@ function parseSkills(skillsJson?: string | null) {
   }
 }
 
+function getCurrentUserId() {
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem('kb_user') : null;
+    return raw ? (JSON.parse(raw) as { user_id?: string }).user_id : null;
+  } catch {
+    return null;
+  }
+}
+
 async function streamAnswer(query: string, onUpdate: (state: StreamState) => void, agentId?: string) {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
+  const userId = getCurrentUserId() || 'anonymous';
+  const sessionId = `session-${userId}-${Date.now()}`;
   const res = await fetch(`${API_BASE}/api/v1/chat/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, user_id: 'demo-user', session_id: 'floating-session', agent_id: agentId }),
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ query, user_id: userId, session_id: sessionId, agent_id: agentId }),
   });
   if (!res.ok || !res.body) throw new Error('问答失败');
 

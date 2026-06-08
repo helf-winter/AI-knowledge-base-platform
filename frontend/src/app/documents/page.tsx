@@ -48,8 +48,28 @@ const MULTIMODAL_HINTS: Record<string, string> = {
   xls: 'Excel 表格',
 };
 
+function getToken() {
+  return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
+}
+
+function getCurrentUserId() {
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem('kb_user') : null;
+    return raw ? (JSON.parse(raw) as { user_id?: string }).user_id : null;
+  } catch {
+    return null;
+  }
+}
+
+async function authedFetch(url: string, init?: RequestInit) {
+  const token = getToken();
+  const headers = new Headers(init?.headers || {});
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(url, { ...init, headers });
+}
+
 async function fetchDocuments() {
-  const res = await fetch(`${API_BASE}/api/v1/documents?limit=50&offset=0`);
+  const res = await authedFetch(`${API_BASE}/api/v1/documents?limit=50&offset=0`);
   if (!res.ok) throw new Error('加载文档列表失败');
   const json = await res.json();
   return json.data as DocumentItem[];
@@ -58,7 +78,7 @@ async function fetchDocuments() {
 async function uploadDocument(file: File) {
   const formData = new FormData();
   formData.append('file', file);
-  const res = await fetch(`${API_BASE}/api/v1/documents/upload`, { method: 'POST', body: formData });
+  const res = await authedFetch(`${API_BASE}/api/v1/documents/upload`, { method: 'POST', body: formData });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '上传失败');
@@ -67,10 +87,10 @@ async function uploadDocument(file: File) {
 }
 
 async function searchKnowledge(query: string) {
-  const res = await fetch(`${API_BASE}/api/v1/knowledge/search`, {
+  const res = await authedFetch(`${API_BASE}/api/v1/knowledge/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, user_id: 'demo-user', top_k: 8 }),
+    body: JSON.stringify({ query, user_id: getCurrentUserId() || 'anonymous', top_k: 8 }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -346,7 +366,7 @@ export default function DocumentsPage() {
                         const ok = confirm(`确定删除文档「${selectedDocument.file_name}」吗？此操作不可恢复。`);
                         if (!ok) return;
                         try {
-                          const res = await fetch(`${API_BASE}/api/v1/documents/${selectedDocument.document_id}`, { method: 'DELETE' });
+                          const res = await authedFetch(`${API_BASE}/api/v1/documents/${selectedDocument.document_id}`, { method: 'DELETE' });
                           if (!res.ok) {
                             const text = await res.text().catch(() => '');
                             throw new Error(text || '删除失败');

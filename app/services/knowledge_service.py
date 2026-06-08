@@ -282,6 +282,7 @@ class KnowledgeService:
         is_helpful: bool,
         comment: str | None = None,
         issue_type: str | None = None,
+        user_id: str | None = None,
     ) -> Feedback:
         feedback = Feedback(
             feedback_id=str(uuid.uuid4()),

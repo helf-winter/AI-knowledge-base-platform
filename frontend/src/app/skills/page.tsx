@@ -62,22 +62,33 @@ type KnowledgeMetadata = {
   acl_json?: string | null;
 };
 
+function getToken() {
+  return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
+}
+
+async function authedFetch(url: string, init?: RequestInit) {
+  const token = getToken();
+  const headers = new Headers(init?.headers || {});
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(url, { ...init, headers });
+}
+
 async function fetchSkills() {
-  const res = await fetch(`${API_BASE}/api/v1/admin/skills`);
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/skills`);
   if (!res.ok) throw new Error('加载能力中心失败');
   const json = await res.json();
   return json.data as Skill[];
 }
 
 async function fetchAgents() {
-  const res = await fetch(`${API_BASE}/api/v1/admin/expert-agents`);
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/expert-agents`);
   if (!res.ok) throw new Error('加载专家助手失败');
   const json = await res.json();
   return json.data as ExpertAgent[];
 }
 
 async function fetchMetadata() {
-  const res = await fetch(`${API_BASE}/api/v1/admin/knowledge-metadata`);
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata`);
   if (!res.ok) throw new Error('加载知识条目失败');
   const json = await res.json();
   return json.data as KnowledgeMetadata[];

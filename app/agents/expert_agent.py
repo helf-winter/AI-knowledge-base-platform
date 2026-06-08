@@ -46,14 +46,17 @@ class ExpertAgent:
                     payload={"model": self.llm.model, "stream": True, "context_count": len(context_chunks)},
                 )
             )
-            return answer_text or "未生成有效回答。", refs, traces
+            if answer_text:
+                return answer_text, refs, traces
 
         fallback = "根据知识库检索结果，相关内容如下：\n" + "\n".join(f"- {item.get('content', '')[:200]}" for item in chunks)
+        if not chunks:
+            fallback = "当前没有检索到足够的知识内容，但你可以尝试换个问法，或者切换到更合适的助手继续交流。"
         traces.append(
             AgentTrace(
                 agent_name="ExpertAgent",
                 action="fallback_summary",
-                payload={"reason": "deepseek_not_configured", "context_count": len(context_chunks)},
+                payload={"reason": "deepseek_empty_or_not_configured", "context_count": len(context_chunks)},
             )
         )
         return fallback, refs, traces
@@ -70,4 +73,19 @@ class ExpertAgent:
                 payload={"query": question, "top_k": top_k, "result_count": len(chunks)},
             )
         ]
-        return self.llm.stream_chat(question, context_chunks, casual=casual), refs, traces
+
+        if self.llm.is_configured():
+            streamed = self.llm.stream_chat(question, context_chunks, casual=casual)
+            return streamed, refs, traces
+
+        fallback = "根据知识库检索结果，相关内容如下：\n" + "\n".join(f"- {item.get('content', '')[:200]}" for item in chunks)
+        if not chunks:
+            fallback = "当前没有检索到足够的知识内容，但你可以尝试换个问法，或者切换到更合适的助手继续交流。"
+        traces.append(
+            AgentTrace(
+                agent_name="ExpertAgent",
+                action="fallback_summary",
+                payload={"reason": "deepseek_not_configured", "context_count": len(context_chunks)},
+            )
+        )
+        return iter([fallback]), refs, traces

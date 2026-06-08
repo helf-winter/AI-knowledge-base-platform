@@ -25,18 +25,29 @@ type KnowledgeMetadata = {
   updated_at?: string | null;
 };
 
+function getToken() {
+  return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
+}
+
+async function authedFetch(url: string, init?: RequestInit) {
+  const token = getToken();
+  const headers = new Headers(init?.headers || {});
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(url, { ...init, headers });
+}
+
 async function fetchMetadata(status?: string, documentId?: string) {
   const url = new URL(`${API_BASE}/api/v1/admin/knowledge-metadata`);
   if (status) url.searchParams.set('status', status);
   if (documentId) url.searchParams.set('document_id', documentId);
-  const res = await fetch(url.toString());
+  const res = await authedFetch(url.toString());
   if (!res.ok) throw new Error('加载知识条目失败');
   const json = await res.json();
   return json.data as KnowledgeMetadata[];
 }
 
 async function createMetadata(payload: Partial<KnowledgeMetadata> & { document_id: string; title: string; knowledge_type: string }) {
-  const res = await fetch(`${API_BASE}/api/v1/admin/knowledge-metadata`, {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -49,7 +60,7 @@ async function createMetadata(payload: Partial<KnowledgeMetadata> & { document_i
 }
 
 async function updateMetadata(knowledgeId: string, payload: Partial<KnowledgeMetadata>) {
-  const res = await fetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}`, {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -62,7 +73,7 @@ async function updateMetadata(knowledgeId: string, payload: Partial<KnowledgeMet
 }
 
 async function reviewMetadata(knowledgeId: string, approve: boolean) {
-  const res = await fetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}/review?approve=${approve}`, {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}/review?approve=${approve}`, {
     method: 'POST',
   });
   if (!res.ok) {
@@ -73,7 +84,7 @@ async function reviewMetadata(knowledgeId: string, approve: boolean) {
 }
 
 async function archiveMetadata(knowledgeId: string) {
-  const res = await fetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}/archive`, { method: 'POST' });
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}/archive`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '归档失败');
@@ -82,7 +93,7 @@ async function archiveMetadata(knowledgeId: string) {
 }
 
 async function deleteMetadata(knowledgeId: string) {
-  const res = await fetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}`, { method: 'DELETE' });
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}`, { method: 'DELETE' });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '删除失败');

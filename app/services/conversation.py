@@ -30,8 +30,10 @@ class ConversationService:
         self.db.refresh(item)
         return item
 
-    def list_turns(self, session_id: str | None = None) -> list[ConversationTurn]:
+    def list_turns(self, session_id: str | None = None, user_id: str | None = None) -> list[ConversationTurn]:
         stmt = select(ConversationTurn)
         if session_id:
             stmt = stmt.where(ConversationTurn.session_id == session_id)
-        return list(self.db.execute(stmt).scalars().all())
+        if user_id:
+            stmt = stmt.where(ConversationTurn.user_id == user_id)
+        return list(self.db.execute(stmt.order_by(ConversationTurn.created_at.desc())).scalars().all())

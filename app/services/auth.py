@@ -68,6 +68,41 @@ class AuthService:
 
         self.db.commit()
 
+    def register(self, username: str, password: str, display_name: str, email: str | None = None) -> tuple[AuthenticatedUser, str]:
+        existed = self.db.execute(select(User).where(User.username == username)).scalar_one_or_none()
+        if existed is not None:
+            raise ValueError("username already exists")
+
+        department = self.db.execute(select(Department).where(Department.department_name == "普通用户")).scalar_one_or_none()
+        if department is None:
+            department = Department(department_id=str(uuid.uuid4()), department_name="普通用户")
+            self.db.add(department)
+            self.db.flush()
+
+        user_role = self.db.execute(select(Role).where(Role.role_name == "user")).scalar_one_or_none()
+        if user_role is None:
+            user_role = Role(role_id=str(uuid.uuid4()), role_name="user")
+            self.db.add(user_role)
+            self.db.flush()
+
+        user = User(
+            user_id=str(uuid.uuid4()),
+            department_id=department.department_id,
+            username=username,
+            display_name=display_name,
+            email=email,
+            password_hash=self._hash_password(password),
+            is_active=True,
+        )
+        self.db.add(user)
+        self.db.flush()
+        self.db.add(UserRole(user_id=user.user_id, role_id=user_role.role_id))
+        self.db.commit()
+
+        auth_user = AuthenticatedUser(user_id=user.user_id, username=user.username, display_name=user.display_name, email=user.email, roles=["user"])
+        token = self.create_token(auth_user)
+        return auth_user, token
+
     def create_token(self, user: AuthenticatedUser, expires_in: int = 60 * 60 * 8) -> str:
         payload = {
             "sub": user.user_id,

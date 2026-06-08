@@ -42,7 +42,7 @@ class DeepSeekClient:
 
     def stream_chat(self, question: str, context_chunks: list[str], casual: bool = False) -> Iterable[str]:
         if not self.is_configured():
-            yield "DeepSeek 未配置，已回退到检索拼接答案。"
+            yield self._build_fallback_answer(question, context_chunks, casual=casual)
             return
 
         payload = {
@@ -56,6 +56,7 @@ class DeepSeekClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        collected = ""
         with httpx.stream(
             "POST",
             f"{self.base_url}/chat/completions",
@@ -64,21 +65,51 @@ class DeepSeekClient:
             timeout=120.0,
         ) as response:
             response.raise_for_status()
-            for line in response.iter_lines():
+            for raw_line in response.iter_lines():
+                if not raw_line:
+                    continue
+                line = raw_line.strip()
                 if not line:
                     continue
                 if line.startswith("data: "):
                     data = line.removeprefix("data: ").strip()
                     if data == "[DONE]":
                         break
-                    try:
-                        obj = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = obj.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    content = delta.get("content")
-                    if content:
-                        yield content
+                    chunk = self._extract_content_from_stream_chunk(data)
+                    if chunk:
+                        collected += chunk
+                        yield chunk
+        if not collected.strip():
+            fallback = self._build_fallback_answer(question, context_chunks, casual=casual)
+            if fallback:
+                yield fallback
+
+    def _extract_content_from_stream_chunk(self, data: str) -> str:
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            return ""
+        choices = obj.get("choices") or []
+        if not choices:
+            return ""
+        choice = choices[0] or {}
+        delta = choice.get("delta") or {}
+        content = delta.get("content")
+        if content:
+            return str(content)
+        message = choice.get("message") or {}
+        content = message.get("content")
+        if content:
+            return str(content)
+        text = obj.get("text")
+        if text:
+            return str(text)
+        return ""
+
+    def _build_fallback_answer(self, question: str, context_chunks: list[str], casual: bool = False) -> str:
+        if context_chunks:
+            summary = "\n".join(f"- {chunk[:180]}" for chunk in context_chunks[:3])
+            return f"根据知识库检索结果，先给你一个简要回答：\n{summary}"
+        if casual:
+            return f"我先给你一个简单建议：关于『{question}』，建议你先明确场景、系统名称和具体报错，再继续提问。"
+        return f"当前没有检索到足够的知识内容，建议你换个更具体的问法，或者补充相关文档后再试。"

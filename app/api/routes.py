@@ -15,7 +15,7 @@ from app.dependencies.auth import get_current_user, require_roles
 from app.models.core import AuditLog
 from app.schemas.admin import ExpertAgentCreate, ExpertAgentRead, KnowledgeHotnessRead, KnowledgeMetadataCreate, KnowledgeMetadataRead, KnowledgeMetadataUpdate, SkillDescriptor
 from app.schemas.audit import AuditLogRead
-from app.schemas.auth import CurrentUserRead, LoginRequest, TokenResponse
+from app.schemas.auth import CurrentUserRead, LoginRequest, RegisterRequest, TokenResponse
 from app.schemas.batch import BatchImportCreate, BatchImportRead
 from app.schemas.common import APIResponse
 from app.schemas.conversation import ConversationTurnCreate, ConversationTurnRead
@@ -55,6 +55,18 @@ def _handle_app_error(exc: Exception) -> None:
     elif getattr(exc, "code", None) == "VALIDATION_ERROR":
         status_code = 422
     raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
+@router.post("/auth/register", response_model=APIResponse[TokenResponse])
+def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    try:
+        auth = AuthService(db)
+        user, token = auth.register(payload.username, payload.password, payload.display_name, payload.email)
+        trace_id = _trace_id_from_request(request)
+        AuditService(db).record(user_id=user.user_id, action="register", resource_type="auth", resource_id=user.user_id, trace_id=trace_id, payload={"username": user.username})
+        return APIResponse(data=TokenResponse(access_token=token, user_id=user.user_id, username=user.username, display_name=user.display_name, roles=user.roles))
+    except Exception as exc:
+        _handle_app_error(exc)
 
 
 @router.post("/auth/login", response_model=APIResponse[TokenResponse])
@@ -150,39 +162,34 @@ def search_knowledge(payload: SearchRequest, db: Session = Depends(get_db), _use
 def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
     service = KnowledgeService(db)
     trace_id = str(uuid.uuid4())
+    session_id = payload.session_id or f"session-{user.user_id}-{uuid.uuid4()}"
 
     def event_stream():
         try:
-            enhanced_query = payload.query
-            if payload.agent_id:
-                enhanced_query = f"{payload.query}\n\n[agent_id={payload.agent_id}]"
-
-            answer, hits, confidence, refs, recommended_agent_id, recommended_agent_name, recommended_reason = service.answer(
-                query=enhanced_query,
-                top_k=5,
-                session_id=payload.session_id,
-                user_id=payload.user_id or user.user_id,
-                trace_id=trace_id,
-                agent_id=payload.agent_id,
-            )
-            AuditService(db).record(
-                user_id=payload.user_id or user.user_id,
-                action="chat_stream",
-                resource_type="conversation",
-                resource_id=payload.session_id,
-                trace_id=trace_id,
-                payload={"query": payload.query, "top_k": 5, "confidence": confidence, "refs": refs},
-            )
+            answer_stream, refs, _traces = service.stream_answer(query=payload.query, top_k=5, user_id=user.user_id, casual=not payload.agent_id)
+            collected = ""
 
             yield f"data: [TRACE_ID] {trace_id}\n\n"
             if refs:
                 yield f"data: [REFS] {'|'.join(refs)}\n\n"
 
-            for line in answer.splitlines() or [answer]:
-                if line:
-                    yield f"data: {line}\n\n"
+            for chunk in answer_stream:
+                if not chunk:
+                    continue
+                collected += chunk
+                yield f"data: {chunk}\n\n"
 
-            yield f"data: {json.dumps({'confidence': confidence, 'chunk_count': len(hits), 'trace_id': trace_id, 'recommended_agent_id': recommended_agent_id, 'recommended_agent_name': recommended_agent_name, 'recommended_reason': recommended_reason}, ensure_ascii=False)}\n\n"
+            confidence = 0.0
+            hits_count = 0
+            AuditService(db).record(
+                user_id=user.user_id,
+                action="chat_stream",
+                resource_type="conversation",
+                resource_id=session_id,
+                trace_id=trace_id,
+                payload={"query": payload.query, "chunk_count": len(refs), "answer_empty": not bool(collected.strip())},
+            )
+            yield f"data: {json.dumps({'confidence': confidence, 'chunk_count': hits_count, 'trace_id': trace_id}, ensure_ascii=False)}\n\n"
         except Exception as exc:
             try:
                 db.rollback()
@@ -190,10 +197,10 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
                 pass
             try:
                 AuditService(db).record(
-                    user_id=payload.user_id or user.user_id,
+                    user_id=user.user_id,
                     action="chat_stream_failed",
                     resource_type="conversation",
-                    resource_id=payload.session_id,
+                    resource_id=session_id,
                     trace_id=trace_id,
                     payload={"query": payload.query, "error": str(exc)},
                 )
@@ -215,14 +222,14 @@ def create_feedback(payload: FeedbackCreate, db: Session = Depends(get_db), user
 
 
 @router.get("/conversation/turns", response_model=APIResponse[list[ConversationTurnRead]])
-def list_conversation_turns(session_id: str | None = None, db: Session = Depends(get_db), _user=Depends(get_current_user)):
-    items = ConversationService(db).list_turns(session_id=session_id)
+def list_conversation_turns(session_id: str | None = None, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    items = ConversationService(db).list_turns(session_id=session_id, user_id=user.user_id)
     return APIResponse(data=[ConversationTurnRead(turn_id=item.turn_id, session_id=item.session_id, user_id=item.user_id, query_text=item.query_text, answer_text=item.answer_text, confidence=item.confidence, source_refs_json=item.source_refs_json, model_name=item.model_name, prompt_version=item.prompt_version, trace_id=item.trace_id, created_at=item.created_at.isoformat() if item.created_at else None) for item in items])
 
 
 @router.get("/audit/logs", response_model=APIResponse[list[AuditLogRead]])
-def list_audit_logs(trace_id: str | None = None, action: str | None = None, resource_type: str | None = None, limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), _user=Depends(get_current_user)):
-    stmt = select(AuditLog)
+def list_audit_logs(trace_id: str | None = None, action: str | None = None, resource_type: str | None = None, limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), user=Depends(get_current_user)):
+    stmt = select(AuditLog).where(AuditLog.user_id == user.user_id)
     if trace_id:
         stmt = stmt.where(AuditLog.trace_id == trace_id)
     if action:
@@ -234,19 +241,19 @@ def list_audit_logs(trace_id: str | None = None, action: str | None = None, reso
 
 
 @router.get("/admin/knowledge-metadata", response_model=APIResponse[list[KnowledgeMetadataRead]])
-def list_knowledge_metadata(status: str | None = None, document_id: str | None = None, include_archived: bool = False, db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
+def list_knowledge_metadata(status: str | None = None, document_id: str | None = None, include_archived: bool = False, db: Session = Depends(get_db), _user=Depends(get_current_user)):
     items = KnowledgeAdminService(db).list_metadata(status=status, document_id=document_id, include_archived=include_archived)
     return APIResponse(data=[KnowledgeMetadataRead(knowledge_id=item.knowledge_id, document_id=item.document_id, title=item.title, author=item.author, knowledge_type=item.knowledge_type, version=item.version, status=item.status, source_type=item.source_type, acl_json=item.acl_json, is_archived=bool(item.is_archived), deleted_at=item.deleted_at, created_at=item.created_at, updated_at=item.updated_at) for item in items])
 
 
 @router.get("/admin/skills", response_model=APIResponse[list[SkillDescriptor]])
-def list_skills(db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
+def list_skills(db: Session = Depends(get_db), _user=Depends(get_current_user)):
     items = KnowledgeAdminService(db).catalog_skills()
     return APIResponse(data=items)
 
 
 @router.get("/admin/expert-agents", response_model=APIResponse[list[ExpertAgentRead]])
-def list_expert_agents(db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
+def list_expert_agents(db: Session = Depends(get_db), _user=Depends(get_current_user)):
     items = KnowledgeAdminService(db).list_expert_agents()
     return APIResponse(data=[ExpertAgentRead(agent_id=item.agent_id, name=item.agent_name, description=item.description, knowledge_domain=item.domain_name, knowledge_scope_json=item.knowledge_scope_json, skills_json=getattr(item, "skills_json", None), model_name="deepseek", prompt_version="v1", status=item.status, created_at=item.created_at, updated_at=item.updated_at) for item in items])
 
