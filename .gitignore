@@ -5,6 +5,9 @@
 #data/
 data/
 
+# build artifacts
+dist/
+
 #taste-skill-main
 taste-skill-main/
 

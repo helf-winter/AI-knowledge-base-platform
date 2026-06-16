@@ -268,16 +268,29 @@ export default function DocumentsPage() {
                 {filteredDocuments.map((doc) => {
                   const active = selectedDocument?.document_id === doc.document_id;
                   return (
-                    <button
+                    <div
                       key={doc.document_id}
-                      type="button"
-                      onClick={() => router.push(`/documents/${doc.document_id}`)}
-                      className={`w-full px-6 py-4 text-left transition ${active ? 'bg-slate-50' : 'hover:bg-slate-50'}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedDocId(doc.document_id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setSelectedDocId(doc.document_id);
+                        }
+                      }}
+                      className={`w-full cursor-pointer px-6 py-4 text-left transition ${active ? 'bg-slate-50' : 'hover:bg-slate-50'}`}
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <div className="truncate text-sm font-medium text-slate-950">{doc.file_name}</div>
+                            <Link
+                              href={`/documents/${doc.document_id}`}
+                              onClick={(event) => event.stopPropagation()}
+                              className="truncate text-sm font-medium text-slate-950 hover:text-blue-700"
+                            >
+                              {doc.file_name}
+                            </Link>
                             <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{doc.parse_status}</Badge>
                           </div>
                           <div className="mt-1 text-xs text-slate-600">{doc.document_id}</div>
@@ -288,9 +301,16 @@ export default function DocumentsPage() {
                             <span>更新：{doc.updated_at ?? '-'}</span>
                           </div>
                         </div>
-                        <ArrowRight size={16} className="mt-1 shrink-0 text-slate-400" />
+                        <Link
+                          href={`/documents/${doc.document_id}`}
+                          onClick={(event) => event.stopPropagation()}
+                          aria-label={`查看 ${doc.file_name} 详情`}
+                          className="mt-1 shrink-0 rounded-full p-2 text-slate-400 transition hover:bg-blue-50 hover:text-blue-700"
+                        >
+                          <ArrowRight size={16} />
+                        </Link>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
