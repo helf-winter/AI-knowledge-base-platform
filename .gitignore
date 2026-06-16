@@ -1,6 +1,7 @@
 # environment
 .env
 .env.local
+.env.production
 
 #data/
 data/

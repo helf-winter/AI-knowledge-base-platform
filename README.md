@@ -99,6 +99,58 @@ start.bat
 
 以下为手动启动方式。
 
+## Docker 部署
+
+项目已提供 Docker Compose 部署文件，适合服务器或交付环境一键启动：
+
+```bash
+cp .env.production.example .env.production
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.production.example .env.production
+```
+
+然后编辑 `.env.production`，至少修改：
+
+```env
+POSTGRES_PASSWORD=你的数据库密码
+DEEPSEEK_API_KEY=你的 DeepSeek Key
+NEXT_PUBLIC_API_BASE=http://localhost:8000
+```
+
+如果部署到云服务器并从其他电脑访问，请把 `NEXT_PUBLIC_API_BASE` 改成服务器可访问地址，例如 `http://服务器IP:8000` 或你的 HTTPS 域名。
+
+启动整套服务：
+
+```bash
+docker compose --env-file .env.production up -d --build
+```
+
+访问地址：
+
+```text
+前端：http://localhost:3000
+后端：http://localhost:8000
+接口文档：http://localhost:8000/docs
+```
+
+查看日志：
+
+```bash
+docker compose --env-file .env.production logs -f
+```
+
+停止服务：
+
+```bash
+docker compose --env-file .env.production down
+```
+
+注意：容器内部连接 PostgreSQL 时，数据库地址使用 Compose 服务名 `postgres`，不是 `127.0.0.1`。`docker-compose.yml` 已自动按 `POSTGRES_*` 变量生成后端 `DATABASE_URL`。
+
 ### 1. 后端
 
 ```bash
