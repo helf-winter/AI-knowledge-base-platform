@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.agents.expert_agent import ExpertAgent
@@ -251,6 +252,122 @@ class KnowledgeService:
     def stream_answer(self, query: str, top_k: int = 5, user_id: str | None = None, casual: bool = False):
         """Return a stream iterator together with references and traces."""
         return self.expert_agent.stream_answer(question=query, top_k=top_k, user_id=user_id, casual=casual)
+
+    def expand_knowledge_from_answer(self, query: str, answer: str, user_id: str | None = None, target_document_id: str | None = None, threshold: float = 0.25) -> dict[str, str | None]:
+        content = self._build_expansion_content(query, answer)
+        target_document = self.get_document(target_document_id) if target_document_id else None
+        if target_document is not None:
+            document = target_document
+            action = "append"
+            title = document.file_name
+        else:
+            hits = self.search(query=query, top_k=1, user_id=user_id)
+            best_hit = hits[0] if hits else None
+            if best_hit and best_hit.score >= threshold:
+                document = best_hit.chunk.document
+                action = "append"
+                title = document.file_name
+            else:
+                document = self._create_generated_document(query, content, owner_user_id=user_id)
+                action = "create"
+                title = document.file_name
+
+        chunk = self._append_chunk(document, content)
+        if document.content_text:
+            if content not in document.content_text:
+                document.content_text = f"{document.content_text.rstrip()}\n\n{content}"
+        else:
+            document.content_text = content
+        document.parse_status = "succeeded"
+
+        metadata = self.db.execute(select(KnowledgeMetadata).where(KnowledgeMetadata.document_id == document.document_id)).scalar_one_or_none()
+        if metadata is None:
+            metadata = KnowledgeMetadata(
+                knowledge_id=str(uuid.uuid4()),
+                document_id=document.document_id,
+                title=title.rsplit(".", 1)[0],
+                author=None,
+                knowledge_type="ai_expansion",
+                version="v1.0.0",
+                status="available",
+                source_type="ai_expand",
+                acl_json=None,
+            )
+            self.db.add(metadata)
+        else:
+            metadata.status = "available"
+            if metadata.knowledge_type == "document":
+                metadata.knowledge_type = "document_ai_enriched"
+
+        vector = fake_embedding(content)
+        self.db.add(ChunkEmbedding(
+            embedding_id=str(uuid.uuid4()),
+            chunk_id=chunk.chunk_id,
+            embedding_model="bge-m3",
+            dimension=len(vector),
+            vector=vector,
+        ))
+        self.db.commit()
+        self.db.refresh(document)
+        self.db.refresh(metadata)
+        return {
+            "document_id": document.document_id,
+            "knowledge_id": metadata.knowledge_id,
+            "action": action,
+            "title": metadata.title,
+        }
+
+    def _build_expansion_content(self, query: str, answer: str) -> str:
+        return (
+            f"# AI 补充知识：{query.strip()}\n\n"
+            f"## 用户问题\n{query.strip()}\n\n"
+            f"## 推荐答案\n{answer.strip()}\n\n"
+            "## 来源说明\n该内容由问答助手在知识库未充分覆盖时生成，并由用户确认扩充。"
+        )
+
+    def _create_generated_document(self, query: str, content: str, owner_user_id: str | None = None) -> Document:
+        doc_id = str(uuid.uuid4())
+        title = self._safe_generated_title(query)
+        encoded = content.encode("utf-8")
+        document = Document(
+            document_id=doc_id,
+            owner_user_id=owner_user_id,
+            file_name=f"{title}.md",
+            file_type="md",
+            file_size=len(encoded),
+            storage_path=f"generated://knowledge-expansion/{doc_id}.md",
+            checksum=hashlib.sha256(encoded).hexdigest(),
+            parse_status="succeeded",
+            visibility="internal",
+            content_text=content,
+        )
+        self.db.add(document)
+        self.db.flush()
+        return document
+
+    def _append_chunk(self, document: Document, content: str) -> DocumentChunk:
+        next_index = self.db.execute(
+            select(func.coalesce(func.max(DocumentChunk.chunk_index), -1)).where(DocumentChunk.document_id == document.document_id)
+        ).scalar_one() + 1
+        chunk = DocumentChunk(
+            chunk_id=str(uuid.uuid4()),
+            document_id=document.document_id,
+            chunk_index=int(next_index),
+            content=content,
+            token_count=max(1, len(content.split())),
+            overlap_count=0,
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            language="zh",
+            embedding_json=None,
+        )
+        self.db.add(chunk)
+        self.db.flush()
+        return chunk
+
+    def _safe_generated_title(self, query: str) -> str:
+        title = "".join(ch for ch in query.strip() if ch.isalnum() or ch in (" ", "-", "_")).strip()
+        title = title[:40] or "AI补充知识"
+        return f"AI补充-{title}"
 
     def _make_turn_payload(
         self,

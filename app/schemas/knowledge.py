@@ -29,6 +29,8 @@ class ChunkItem(BaseModel):
     page_end: int | None = None
     score: float | None = None
     source_file_name: str | None = None
+    file_type: str | None = None
+    updated_at: str | None = None
 
 
 class DocumentDetail(BaseModel):
@@ -73,6 +75,20 @@ class ChatResponse(BaseModel):
     recommended_agent_id: str | None = None
     recommended_agent_name: str | None = None
     recommended_reason: str | None = None
+
+
+class KnowledgeExpansionRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(min_length=1, max_length=10000)
+    trace_id: str | None = None
+    target_document_id: str | None = None
+
+
+class KnowledgeExpansionResponse(BaseModel):
+    document_id: str
+    knowledge_id: str | None = None
+    action: str
+    title: str
 
 
 class FeedbackCreate(BaseModel):

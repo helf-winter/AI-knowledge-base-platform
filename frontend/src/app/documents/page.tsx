@@ -268,7 +268,12 @@ export default function DocumentsPage() {
                 {filteredDocuments.map((doc) => {
                   const active = selectedDocument?.document_id === doc.document_id;
                   return (
-                    <button key={doc.document_id} type="button" onClick={() => setSelectedDocId(doc.document_id)} className={`w-full px-6 py-4 text-left transition ${active ? 'bg-slate-50' : 'hover:bg-slate-50'}`}>
+                    <button
+                      key={doc.document_id}
+                      type="button"
+                      onClick={() => router.push(`/documents/${doc.document_id}`)}
+                      className={`w-full px-6 py-4 text-left transition ${active ? 'bg-slate-50' : 'hover:bg-slate-50'}`}
+                    >
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">

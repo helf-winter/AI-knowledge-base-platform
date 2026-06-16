@@ -3,21 +3,21 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { ReactNode, useEffect, useState } from 'react';
-import { Clock3, FileUp, History, LogOut, Puzzle, ShieldCheck, Sparkles } from 'lucide-react';
+import { FileUp, History, Home, LogOut, Puzzle, ShieldCheck, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { FloatingAssistant } from './floating-assistant';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
 const primaryNavItems = [
-  { href: '/', label: '知识库', icon: FileUp },
-  { href: '/skills', label: '助手', icon: Puzzle },
+  { href: '/', label: '首页仪表盘', icon: Home },
+  { href: '/documents', label: '知识库', icon: FileUp },
+  { href: '/skills', label: '助手与技能', icon: Puzzle },
 ];
 
 const supportNavItems = [
   { href: '/admin', label: '内容管理', icon: ShieldCheck },
-  { href: '/audit', label: '操作记录', icon: Clock3 },
-  { href: '/tasks', label: '待办处理', icon: FileUp },
+  { href: '/tasks', label: '自动学习', icon: FileUp },
   { href: '/conversations', label: '问答记录', icon: History },
 ];
 

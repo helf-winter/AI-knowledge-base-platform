@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
+import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { RefreshCw, FileText, ListChecks, ShieldCheck, PencilLine, ArrowRight } from 'lucide-react';
+import { RefreshCw, FileText, ListChecks, ShieldCheck, PencilLine, ArrowRight, ArrowLeft } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -88,6 +89,8 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [metadata, setMetadata] = useState<KnowledgeMetadata[]>([]);
   const [loading, setLoading] = useState(false);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [rawText, setRawText] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -116,6 +119,56 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
     };
   }, [params]);
 
+  useEffect(() => {
+    if (!detail || detail.file_type.toLowerCase() !== 'pdf') {
+      setPdfUrl(null);
+      return;
+    }
+
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/documents/${detail.document_id}/raw`);
+        if (!res.ok) throw new Error('PDF raw file is not available');
+        const blob = await res.blob();
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPdfUrl(objectUrl);
+      } catch {
+        if (!cancelled) setPdfUrl(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [detail]);
+
+  useEffect(() => {
+    if (!detail || detail.file_type.toLowerCase() !== 'csv') {
+      setRawText(null);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/documents/${detail.document_id}/raw`);
+        if (!res.ok) throw new Error('CSV raw file is not available');
+        const text = await res.text();
+        if (!cancelled) setRawText(text);
+      } catch {
+        if (!cancelled) setRawText(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detail]);
+
   const renderHighlighted = (text: string) => {
     if (!highlight || !text) return text;
     const lower = text.toLowerCase();
@@ -133,8 +186,185 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
     );
   };
 
+  const renderInlineMarkdown = (text: string) => {
+    return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={index} className="font-semibold text-slate-950">{part.slice(2, -2)}</strong>;
+      }
+      return <span key={index}>{renderHighlighted(part)}</span>;
+    });
+  };
+
+  const renderMarkdownPreview = (text: string) => {
+    const nodes: ReactNode[] = [];
+    let listItems: ReactNode[] = [];
+    const flushList = () => {
+      if (listItems.length) {
+        nodes.push(<ul key={`ul-${nodes.length}`} className="my-2 list-disc space-y-1 pl-5">{listItems}</ul>);
+        listItems = [];
+      }
+    };
+
+    text.split('\n').forEach((raw, index) => {
+      const line = raw.trimEnd();
+      if (!line.trim()) {
+        flushList();
+        nodes.push(<div key={`br-${index}`} className="h-2" />);
+        return;
+      }
+      const heading = line.match(/^(#{1,3})\s+(.+)$/);
+      if (heading) {
+        flushList();
+        const size = heading[1].length === 1 ? 'text-xl' : heading[1].length === 2 ? 'text-lg' : 'text-base';
+        nodes.push(<div key={`h-${index}`} className={`${size} mt-3 font-semibold text-slate-950`}>{renderInlineMarkdown(heading[2])}</div>);
+        return;
+      }
+      const bullet = line.match(/^[-*]\s+(.+)$/);
+      const ordered = line.match(/^\d+[.)]\s+(.+)$/);
+      if (bullet || ordered) {
+        listItems.push(<li key={`li-${index}`}>{renderInlineMarkdown((bullet || ordered)?.[1] || line)}</li>);
+        return;
+      }
+      flushList();
+      nodes.push(<p key={`p-${index}`} className="my-1 leading-7">{renderInlineMarkdown(line)}</p>);
+    });
+    flushList();
+    return nodes;
+  };
+
+  const parseCsv = (text: string) => {
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let cell = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+      const next = text[i + 1];
+      if (char === '"') {
+        if (inQuotes && next === '"') {
+          cell += '"';
+          i += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+      if (char === ',' && !inQuotes) {
+        row.push(cell.trim());
+        cell = '';
+        continue;
+      }
+      if ((char === '\n' || char === '\r') && !inQuotes) {
+        if (char === '\r' && next === '\n') i += 1;
+        row.push(cell.trim());
+        if (row.some((value) => value)) rows.push(row);
+        row = [];
+        cell = '';
+        continue;
+      }
+      cell += char;
+    }
+
+    row.push(cell.trim());
+    if (row.some((value) => value)) rows.push(row);
+    return rows;
+  };
+
+  const tableRowsFromParsedText = (text: string) => {
+    return text
+      .split('\n')
+      .map((line) => line.split(' | ').map((cell) => cell.trim()))
+      .filter((row) => row.some((value) => value));
+  };
+
+  const renderTablePreview = (rows: string[][]) => {
+    if (!rows.length) {
+      return (
+        <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm text-[color:var(--muted)]">
+          暂无可展示的表格内容。
+        </div>
+      );
+    }
+    const [header, ...body] = rows;
+    return (
+      <div className="max-h-[32rem] overflow-auto rounded-2xl border border-[color:var(--border)] bg-white/80">
+        <table className="min-w-full border-collapse text-left text-sm text-[color:var(--text)]">
+          <thead className="sticky top-0 bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
+            <tr>
+              {header.map((cell, index) => (
+                <th key={`${cell}-${index}`} className="border-b border-slate-200 px-4 py-3 font-semibold">
+                  {renderHighlighted(cell || `列 ${index + 1}`)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {body.map((row, rowIndex) => (
+              <tr key={rowIndex} className={rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                {header.map((_, cellIndex) => (
+                  <td key={cellIndex} className="border-b border-slate-100 px-4 py-3 align-top">
+                    {renderHighlighted(row[cellIndex] ?? '')}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  const renderFullPreview = (doc: DocumentDetail) => {
+    const content = doc.content_text || '暂无内容';
+    const fileType = doc.file_type.toLowerCase();
+    if (fileType === 'md') {
+      return (
+        <div className="max-h-[28rem] overflow-auto rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm text-[color:var(--text)]">
+          {renderMarkdownPreview(content)}
+        </div>
+      );
+    }
+    if (fileType === 'csv') {
+      const rows = rawText ? parseCsv(rawText) : tableRowsFromParsedText(content);
+      return renderTablePreview(rows);
+    }
+    if (fileType === 'pdf') {
+      if (pdfUrl) {
+        return (
+          <iframe
+            title={doc.file_name}
+            src={pdfUrl}
+            className="h-[32rem] w-full rounded-2xl border border-[color:var(--border)] bg-white"
+          />
+        );
+      }
+      return (
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            PDF 原文件暂不可直接预览，下面展示系统解析后的文本内容。
+          </div>
+          <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm leading-6 text-[color:var(--text)]">
+            {renderHighlighted(content)}
+          </pre>
+        </div>
+      );
+    }
+    return (
+      <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm leading-6 text-[color:var(--text)]">
+        {renderHighlighted(content)}
+      </pre>
+    );
+  };
+
   return (
     <div className="space-y-6">
+      <Button asChild variant="outline" size="sm">
+        <Link href="/documents">
+          <ArrowLeft size={14} /> 返回知识库
+        </Link>
+      </Button>
+
       <Card className="border-[color:var(--border)] bg-[color:var(--surface)] shadow-[0_12px_32px_rgba(15,23,42,0.05)]">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-[color:var(--text)]"><FileText size={18} /> 文档详情</CardTitle>
@@ -238,12 +468,10 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
           <Card className="border-[color:var(--border)] bg-[color:var(--surface)] shadow-[0_12px_32px_rgba(15,23,42,0.05)]">
             <CardHeader>
               <CardTitle className="text-[color:var(--text)]">全文预览</CardTitle>
-              <CardDescription className="text-[color:var(--muted)]">展示解析后的文本内容，命中关键词会高亮显示。</CardDescription>
+              <CardDescription className="text-[color:var(--muted)]">按文件类型展示预览：txt 保留原文格式，md 渲染 Markdown，csv 展示表格，pdf 优先展示原文件。</CardDescription>
             </CardHeader>
             <CardContent>
-              <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm leading-6 text-[color:var(--text)]">
-                {renderHighlighted(detail.content_text || '暂无内容')}
-              </pre>
+              {renderFullPreview(detail)}
             </CardContent>
           </Card>
 

@@ -1,12 +1,11 @@
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { RefreshCw, MessageSquareText, Filter, ArrowRight } from 'lucide-react';
+import { RefreshCw, Filter } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -23,7 +22,7 @@ type ConversationItem = {
   trace_id?: string | null;
 };
 
-function getAuthHeaders() {
+function getAuthHeaders(): HeadersInit {
   const token = typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
@@ -144,16 +143,6 @@ export default function ConversationsPage() {
 
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600 break-all">
                   Refs: {item.source_refs_json}
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  {item.trace_id ? (
-                    <Button asChild size="sm" variant="outline">
-                      <Link href={`/audit?trace_id=${encodeURIComponent(item.trace_id)}`}>
-                        <ArrowRight size={14} /> 去操作记录
-                      </Link>
-                    </Button>
-                  ) : null}
                 </div>
               </CardContent>
             </Card>

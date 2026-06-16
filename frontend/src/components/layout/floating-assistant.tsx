@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Bot, X, SendHorizonal, Sparkles, GripVertical, RefreshCw, WandSparkles } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Bot, CheckCircle2, GripVertical, SendHorizonal, Sparkles, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -11,40 +12,45 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 type StreamState = {
   answer: string;
   traceId: string;
-  refs: string[];
-  recommendedAgentId?: string | null;
-  recommendedAgentName?: string | null;
-  recommendedReason?: string | null;
+  sources: SourceDocument[];
+  error?: string | null;
+  mode?: string | null;
+  canExpand?: boolean;
+  expansionQuestion?: string | null;
 };
 
-async function fetchAgents() {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
-  const res = await fetch(`${API_BASE}/api/v1/admin/expert-agents`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  });
-  if (!res.ok) return [];
-  const json = await res.json();
-  return (json.data ?? []) as Array<{ agent_id: string; name: string; knowledge_domain: string; skills_json?: string | null }>;
-}
+type SourceDocument = {
+  source_number?: number;
+  document_id: string;
+  file_name: string;
+};
 
-function skillLabel(skillId: string) {
-  const map: Record<string, string> = {
-    knowledge_search: '知识检索',
-    knowledge_extract: '知识抽取',
-    knowledge_compare: '知识对比',
-    document_summarize: '文档总结',
-  };
-  return map[skillId] ?? skillId;
-}
+type ExpandResult = {
+  document_id: string;
+  knowledge_id?: string | null;
+  action: string;
+  title: string;
+};
 
-function parseSkills(skillsJson?: string | null) {
-  if (!skillsJson) return ['knowledge_search'];
-  try {
-    const parsed = JSON.parse(skillsJson);
-    return Array.isArray(parsed) ? parsed : ['knowledge_search'];
-  } catch {
-    return ['knowledge_search'];
-  }
+type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  query?: string;
+  answer?: string;
+  traceId?: string;
+  sources?: SourceDocument[];
+  mode?: string | null;
+  canExpand?: boolean;
+  expansionQuestion?: string | null;
+  expandDismissed?: boolean;
+  expandResult?: ExpandResult | null;
+  error?: string | null;
+};
+
+const STORAGE_KEY = 'kb_floating_assistant_messages';
+
+function getToken() {
+  return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
 }
 
 function getCurrentUserId() {
@@ -56,17 +62,17 @@ function getCurrentUserId() {
   }
 }
 
-async function streamAnswer(query: string, onUpdate: (state: StreamState) => void, agentId?: string) {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
+async function streamAnswer(query: string, onUpdate: (state: StreamState) => void) {
+  const token = getToken();
   const userId = getCurrentUserId() || 'anonymous';
-  const sessionId = `session-${userId}-${Date.now()}`;
+  const sessionId = crypto.randomUUID();
   const res = await fetch(`${API_BASE}/api/v1/chat/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ query, user_id: userId, session_id: sessionId, agent_id: agentId }),
+    body: JSON.stringify({ query, user_id: userId, session_id: sessionId }),
   });
   if (!res.ok || !res.body) throw new Error('问答失败');
 
@@ -75,11 +81,12 @@ async function streamAnswer(query: string, onUpdate: (state: StreamState) => voi
   let buffer = '';
   let answer = '';
   let traceId = '';
-  let refs: string[] = [];
-  let recommendedAgentId: string | null = null;
-  let recommendedAgentName: string | null = null;
-  let recommendedReason: string | null = null;
-  const emit = () => onUpdate({ answer, traceId, refs, recommendedAgentId, recommendedAgentName, recommendedReason });
+  let sources: SourceDocument[] = [];
+  let error: string | null = null;
+  let mode: string | null = null;
+  let canExpand = false;
+  let expansionQuestion: string | null = null;
+  const emit = () => onUpdate({ answer, traceId, sources, error, mode, canExpand, expansionQuestion });
 
   while (true) {
     const { done, value } = await reader.read();
@@ -91,15 +98,38 @@ async function streamAnswer(query: string, onUpdate: (state: StreamState) => voi
       const line = part.trim();
       if (!line.startsWith('data:')) continue;
       const payload = line.replace(/^data:\s*/, '');
-      if (payload.startsWith('[TRACE_ID]')) { traceId = payload.replace('[TRACE_ID]', '').trim(); emit(); continue; }
-      if (payload.startsWith('[REFS]')) { refs = payload.replace('[REFS]', '').split('|').map((s) => s.trim()).filter(Boolean); emit(); continue; }
+      if (payload.startsWith('[TRACE_ID]')) {
+        traceId = payload.replace('[TRACE_ID]', '').trim();
+        emit();
+        continue;
+      }
       try {
-        const meta = JSON.parse(payload) as { trace_id?: string };
+        const meta = JSON.parse(payload) as {
+          delta?: string;
+          trace_id?: string;
+          error?: string;
+          mode?: string;
+          can_expand?: boolean;
+          expansion_question?: string | null;
+          sources?: SourceDocument[];
+        };
+        if (typeof meta.delta === 'string') {
+          answer += meta.delta;
+          emit();
+          continue;
+        }
+        if (Array.isArray(meta.sources)) {
+          sources = meta.sources;
+          emit();
+          if (!meta.trace_id) continue;
+        }
         if (meta?.trace_id) {
           traceId = meta.trace_id;
-          recommendedAgentId = meta.recommended_agent_id ?? recommendedAgentId;
-          recommendedAgentName = meta.recommended_agent_name ?? recommendedAgentName;
-          recommendedReason = meta.recommended_reason ?? recommendedReason;
+          error = meta.error ?? error;
+          mode = meta.mode ?? mode;
+          canExpand = Boolean(meta.can_expand);
+          expansionQuestion = meta.expansion_question ?? expansionQuestion;
+          if (Array.isArray(meta.sources)) sources = meta.sources;
           emit();
           continue;
         }
@@ -110,32 +140,130 @@ async function streamAnswer(query: string, onUpdate: (state: StreamState) => voi
   }
 }
 
+async function expandKnowledge(query: string, answer: string, traceId: string, targetDocumentId?: string) {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/api/v1/knowledge/expand`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ query, answer, trace_id: traceId || undefined, target_document_id: targetDocumentId }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '扩充知识失败');
+  }
+  const json = await res.json();
+  return json.data as ExpandResult;
+}
+
+function modeLabel(mode?: string | null) {
+  if (mode === 'knowledge') return '知识库回答';
+  if (mode === 'auto_general') return '已自动切换通用回答';
+  return '自动问答';
+}
+
+function inlineMarkdown(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index} className="font-semibold text-slate-950">{part.slice(2, -2)}</strong>;
+    }
+    return <span key={index}>{part}</span>;
+  });
+}
+
+function renderMarkdown(text: string) {
+  const lines = text.split('\n');
+  const nodes: ReactNode[] = [];
+  let listItems: ReactNode[] = [];
+
+  const flushList = () => {
+    if (listItems.length) {
+      nodes.push(<ul key={`ul-${nodes.length}`} className="my-2 list-disc space-y-1 pl-5">{listItems}</ul>);
+      listItems = [];
+    }
+  };
+
+  lines.forEach((raw, index) => {
+    const line = raw.trimEnd();
+    if (!line.trim()) {
+      flushList();
+      nodes.push(<div key={`br-${index}`} className="h-2" />);
+      return;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushList();
+      const size = heading[1].length === 1 ? 'text-base' : 'text-sm';
+      nodes.push(<div key={`h-${index}`} className={`${size} mt-2 font-semibold text-slate-950`}>{inlineMarkdown(heading[2])}</div>);
+      return;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/);
+    if (bullet || ordered) {
+      listItems.push(<li key={`li-${index}`}>{inlineMarkdown((bullet || ordered)?.[1] || line)}</li>);
+      return;
+    }
+    flushList();
+    nodes.push(<p key={`p-${index}`} className="my-1">{inlineMarkdown(line)}</p>);
+  });
+  flushList();
+  return nodes;
+}
+
 export function FloatingAssistant() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [answer, setAnswer] = useState('');
-  const [traceId, setTraceId] = useState('');
-  const [refs, setRefs] = useState<string[]>([]);
-  const [recommendedAgentId, setRecommendedAgentId] = useState<string | null>(null);
-  const [recommendedAgentName, setRecommendedAgentName] = useState<string | null>(null);
-  const [recommendedReason, setRecommendedReason] = useState<string | null>(null);
+  const [expanding, setExpanding] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
-  const [agents, setAgents] = useState<Array<{ agent_id: string; name: string; knowledge_domain: string; skills_json?: string | null }>>([]);
-  const [agentId, setAgentId] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
   const [launcherPosition, setLauncherPosition] = useState({ x: 0, y: 0 });
   const [panelPosition, setPanelPosition] = useState({ x: 0, y: 0 });
+  const [panelSize, setPanelSize] = useState({ width: 420, height: 640 });
   const [draggingLauncher, setDraggingLauncher] = useState(false);
   const [draggingPanel, setDraggingPanel] = useState(false);
-  const launcherDragState = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
+  const openRef = useRef(open);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const suppressLauncherClick = useRef(false);
+  const launcherDragState = useRef<{ startX: number; startY: number; baseX: number; baseY: number; moved: boolean } | null>(null);
   const panelDragState = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
 
   useEffect(() => {
-    const startX = Math.max(24, window.innerWidth - 112);
-    const startY = Math.max(24, window.innerHeight - 90);
-    setLauncherPosition({ x: startX, y: startY });
-    setPanelPosition({ x: Math.max(24, window.innerWidth - 460), y: Math.max(24, window.innerHeight - 560) });
-    void fetchAgents().then(setAgents).catch(() => setAgents([]));
+    openRef.current = open;
+  }, [open]);
+
+  useEffect(() => {
+    setLauncherPosition({ x: Math.max(16, window.innerWidth - 140), y: Math.max(16, window.innerHeight - 92) });
+    setPanelPosition({ x: Math.max(16, window.innerWidth - 452), y: 24 });
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) setMessages(JSON.parse(raw) as ChatMessage[]);
+    } catch {}
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-20)));
+    } catch {}
+  }, [messages]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setLauncherPosition((current) => ({
+        x: Math.min(Math.max(16, current.x), Math.max(16, window.innerWidth - 140)),
+        y: Math.min(Math.max(16, current.y), Math.max(16, window.innerHeight - 92)),
+      }));
+      setPanelPosition((current) => ({
+        x: Math.min(Math.max(16, current.x), Math.max(16, window.innerWidth - panelSize.width - 16)),
+        y: Math.min(Math.max(16, current.y), Math.max(16, window.innerHeight - panelSize.height - 16)),
+      }));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [panelSize.height, panelSize.width]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -151,17 +279,26 @@ export function FloatingAssistant() {
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       if (launcherDragState.current) {
-        const nextX = Math.max(12, launcherDragState.current.baseX + (event.clientX - launcherDragState.current.startX));
-        const nextY = Math.max(12, launcherDragState.current.baseY + (event.clientY - launcherDragState.current.startY));
+        const deltaX = event.clientX - launcherDragState.current.startX;
+        const deltaY = event.clientY - launcherDragState.current.startY;
+        if (Math.hypot(deltaX, deltaY) > 5) launcherDragState.current.moved = true;
+        const nextX = Math.min(Math.max(12, launcherDragState.current.baseX + deltaX), Math.max(12, window.innerWidth - 120));
+        const nextY = Math.min(Math.max(12, launcherDragState.current.baseY + deltaY), Math.max(12, window.innerHeight - 72));
         setLauncherPosition({ x: nextX, y: nextY });
       }
       if (panelDragState.current) {
-        const nextX = Math.max(12, panelDragState.current.baseX + (event.clientX - panelDragState.current.startX));
-        const nextY = Math.max(12, panelDragState.current.baseY + (event.clientY - panelDragState.current.startY));
+        const nextX = Math.min(Math.max(12, panelDragState.current.baseX + (event.clientX - panelDragState.current.startX)), Math.max(12, window.innerWidth - panelSize.width - 16));
+        const nextY = Math.min(Math.max(12, panelDragState.current.baseY + (event.clientY - panelDragState.current.startY)), Math.max(12, window.innerHeight - panelSize.height - 16));
         setPanelPosition({ x: nextX, y: nextY });
       }
     };
     const onUp = () => {
+      if (launcherDragState.current?.moved) {
+        suppressLauncherClick.current = true;
+        window.setTimeout(() => {
+          suppressLauncherClick.current = false;
+        }, 160);
+      }
       launcherDragState.current = null;
       panelDragState.current = null;
       setDraggingLauncher(false);
@@ -173,13 +310,68 @@ export function FloatingAssistant() {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
-  }, []);
+  }, [panelSize.height, panelSize.width]);
+
+  useEffect(() => {
+    if (!open || !panelRef.current) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const rect = entry.contentRect;
+      setPanelSize({
+        width: Math.min(Math.max(360, Math.round(rect.width)), Math.max(360, window.innerWidth - 24)),
+        height: Math.min(Math.max(480, Math.round(rect.height)), Math.max(480, window.innerHeight - 24)),
+      });
+    });
+    observer.observe(panelRef.current);
+    return () => observer.disconnect();
+  }, [open]);
+
+  const updateMessage = (id: string, patch: Partial<ChatMessage>) => {
+    setMessages((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)).slice(-20));
+  };
+
+  const notifyDone = () => {
+    if (openRef.current) return;
+    setNotice('AI 回答完成，点击查看');
+    window.setTimeout(() => setNotice(null), 4200);
+  };
+
+  const handleSend = async () => {
+    try {
+      setLoading(true);
+      const cleanQuery = query.trim();
+      const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', query: cleanQuery };
+      const assistantId = crypto.randomUUID();
+      const assistantMessage: ChatMessage = { id: assistantId, role: 'assistant', query: cleanQuery, answer: '', sources: [] };
+      setMessages((current) => [...current, userMessage, assistantMessage].slice(-20));
+      setQuery('');
+      await streamAnswer(cleanQuery, (state) => {
+        updateMessage(assistantId, {
+          answer: state.answer,
+          error: state.error ?? '',
+          traceId: state.traceId,
+          sources: state.sources,
+          mode: state.mode ?? null,
+          canExpand: Boolean(state.canExpand),
+          expansionQuestion: state.expansionQuestion ?? null,
+        });
+      });
+      notifyDone();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '问答失败');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          if (suppressLauncherClick.current) return;
+          setOpen(true);
+          setNotice(null);
+        }}
         onPointerDown={(event) => {
           event.preventDefault();
           setDraggingLauncher(true);
@@ -188,6 +380,7 @@ export function FloatingAssistant() {
             startY: event.clientY,
             baseX: launcherPosition.x,
             baseY: launcherPosition.y,
+            moved: false,
           };
         }}
         className="fixed z-50 inline-flex items-center gap-2 rounded-full bg-blue-600 px-4 py-3 text-sm font-medium text-white shadow-[0_16px_40px_rgba(37,99,235,0.35)] transition hover:bg-blue-700"
@@ -197,10 +390,23 @@ export function FloatingAssistant() {
       </button>
 
       {open ? (
-        <div className="fixed z-[60] w-[min(92vw,420px)]" style={{ left: panelPosition.x, top: panelPosition.y }}>
-          <Card className="border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
+        <div
+          ref={panelRef}
+          className="fixed z-[60] resize overflow-hidden rounded-2xl"
+          style={{
+            left: panelPosition.x,
+            top: panelPosition.y,
+            width: `min(${panelSize.width}px, calc(100vw - 24px))`,
+            height: `min(${panelSize.height}px, calc(100vh - 24px))`,
+            minWidth: 360,
+            minHeight: 480,
+            maxWidth: 'calc(100vw - 24px)',
+            maxHeight: 'calc(100vh - 24px)',
+          }}
+        >
+          <Card className="flex h-full flex-col overflow-hidden border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
             <CardHeader
-              className="cursor-grab border-b border-slate-100 pb-3 select-none"
+              className="cursor-grab select-none border-b border-slate-100 pb-3"
               onPointerDown={(event) => {
                 event.preventDefault();
                 setDraggingPanel(true);
@@ -215,43 +421,93 @@ export function FloatingAssistant() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <CardTitle className="flex items-center gap-2 text-base text-slate-950"><Sparkles size={16} /> AI 问答助手</CardTitle>
-                  <CardDescription className="text-slate-600">拖动标题栏可以移动这个浮窗。</CardDescription>
+                  <CardDescription className="text-slate-600">自动优先查知识库，答不上时切换通用回答。</CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
                   <GripVertical size={16} className={draggingPanel ? 'text-blue-600' : 'text-slate-400'} />
-                  <button type="button" onClick={() => setOpen(false)} className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 hover:text-slate-950">
+                  <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={() => setOpen(false)} className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 hover:text-slate-950">
                     <X size={16} />
                   </button>
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="space-y-4 pt-4">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-medium text-slate-600">当前助手</div>
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600 transition hover:border-blue-300 hover:text-blue-700"
-                    onClick={async () => {
-                      setAgents(await fetchAgents());
-                    }}
-                  >
-                    <RefreshCw size={12} /> 刷新
-                  </button>
-                </div>
-                <select
-                  value={agentId}
-                  onChange={(e) => setAgentId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
-                >
-                  <option value="">通用问答</option>
-                  {agents.map((agent) => (
-                    <option key={agent.agent_id} value={agent.agent_id}>
-                      {agent.name} · {agent.knowledge_domain}
-                    </option>
-                  ))}
-                </select>
+            <CardContent className="min-h-0 flex-1 space-y-4 overflow-y-auto pt-4">
+              <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-xs leading-5 text-blue-900">
+                当前为自动问答：系统会先尝试知识库专家回答；如果知识不足，会自动切换为通用回答，并允许你一键扩充知识库。
               </div>
+
+              <div className="max-h-[min(22rem,45vh)] space-y-3 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                {messages.length === 0 ? (
+                  <div className="text-sm text-slate-500">还没有会话。发送一个问题后，历史问答会像聊天一样保留在这里。</div>
+                ) : (
+                  messages.map((message) => (
+                    <div key={message.id} className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+                      {message.role === 'user' ? (
+                        <div className="max-w-[85%] rounded-2xl bg-blue-600 px-3 py-2 text-sm leading-6 text-white">
+                          {message.query}
+                        </div>
+                      ) : (
+                        <div className="max-w-[95%] space-y-2 rounded-2xl border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-900">
+                          <div className="space-y-1">{message.answer ? renderMarkdown(message.answer) : '回答中...'}</div>
+                          {message.error ? <div className="rounded-xl border border-red-200 bg-red-50 p-2 text-xs text-red-700">{message.error}</div> : null}
+                          <div className="space-y-2 rounded-xl bg-slate-50 p-2 text-xs text-slate-600">
+                            <div>Trace ID：{message.traceId || '-'}</div>
+                            <div>回答模式：{modeLabel(message.mode)}</div>
+                            <div className="flex flex-wrap gap-2">
+                              {message.sources?.length ? message.sources.map((source) => (
+                                <a
+                                  key={source.document_id}
+                                  href={`/documents/${source.document_id}?highlight=${encodeURIComponent(message.query || query.trim())}`}
+                                  className="rounded-full bg-white px-2 py-1 text-blue-700 transition hover:bg-blue-50 hover:text-blue-800"
+                                >
+                                  {source.source_number ? `[${source.source_number}] ` : ''}{source.file_name}
+                                </a>
+                              )) : '暂无来源文档'}
+                            </div>
+                          </div>
+
+                          {message.canExpand && message.answer && !message.expandDismissed && !message.expandResult ? (
+                            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
+                              <div className="font-medium">{message.expansionQuestion || '是否扩充该知识内容？'}</div>
+                              <div className="mt-1 text-amber-800">扩充后会整理为知识片段，优先追加到最相近知识库；没有相近内容时创建新的知识库文档。</div>
+                              <div className="mt-3 flex gap-2">
+                                <Button size="sm" variant="outline" onClick={() => updateMessage(message.id, { expandDismissed: true })}>暂不</Button>
+                                <Button
+                                  size="sm"
+                                  disabled={expanding}
+                                  onClick={async () => {
+                                    try {
+                                      setExpanding(true);
+                                      const result = await expandKnowledge(message.query || '', message.answer || '', message.traceId || '', message.sources?.[0]?.document_id);
+                                      updateMessage(message.id, { expandResult: result });
+                                    } catch (error) {
+                                      alert(error instanceof Error ? error.message : '扩充失败');
+                                    } finally {
+                                      setExpanding(false);
+                                    }
+                                  }}
+                                >
+                                  {expanding ? '扩充中...' : '扩充'}
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {message.expandResult ? (
+                            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs leading-5 text-emerald-800">
+                              <div className="flex items-center gap-2 font-medium text-emerald-900"><CheckCircle2 size={14} /> 知识已扩充</div>
+                              <div className="mt-1">处理方式：{message.expandResult.action === 'append' ? '追加到相近知识库' : '创建新知识库'}</div>
+                              <div>知识库：{message.expandResult.title}</div>
+                              <div>文档 ID：{message.expandResult.document_id}</div>
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+
               <Textarea
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -263,20 +519,24 @@ export function FloatingAssistant() {
                   onClick={async () => {
                     try {
                       setLoading(true);
-                      setAnswer('');
-                      setTraceId('');
-                      setRefs([]);
-                      setRecommendedAgentId(null);
-                      setRecommendedAgentName(null);
-                      setRecommendedReason(null);
-                      await streamAnswer(query, (state) => {
-                        setAnswer(state.answer);
-                        setTraceId(state.traceId);
-                        setRefs(state.refs);
-                        setRecommendedAgentId(state.recommendedAgentId ?? null);
-                        setRecommendedAgentName(state.recommendedAgentName ?? null);
-                        setRecommendedReason(state.recommendedReason ?? null);
-                      }, agentId || undefined);
+                      const cleanQuery = query.trim();
+                      const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', query: cleanQuery };
+                      const assistantId = crypto.randomUUID();
+                      const assistantMessage: ChatMessage = { id: assistantId, role: 'assistant', query: cleanQuery, answer: '', sources: [] };
+                      setMessages((current) => [...current, userMessage, assistantMessage].slice(-20));
+                      setQuery('');
+                      await streamAnswer(cleanQuery, (state) => {
+                        updateMessage(assistantId, {
+                          answer: state.answer,
+                          error: state.error ?? '',
+                          traceId: state.traceId,
+                          sources: state.sources,
+                          mode: state.mode ?? null,
+                          canExpand: Boolean(state.canExpand),
+                          expansionQuestion: state.expansionQuestion ?? null,
+                        });
+                      });
+                      notifyDone();
                     } catch (error) {
                       alert(error instanceof Error ? error.message : '问答失败');
                     } finally {
@@ -288,48 +548,26 @@ export function FloatingAssistant() {
                 >
                   <SendHorizonal size={16} /> {loading ? '回答中...' : '发送'}
                 </Button>
-                <Button variant="outline" onClick={() => { setQuery(''); setAnswer(''); setTraceId(''); setRefs([]); }}>
-                  清空
+                <Button variant="outline" onClick={() => { setQuery(''); setMessages([]); localStorage.removeItem(STORAGE_KEY); }}>
+                  清空会话
                 </Button>
-              </div>
-              <div className="space-y-2 rounded-2xl bg-slate-50 p-3 text-xs text-slate-600">
-                <div>Trace ID：{traceId || '-'}</div>
-                <div className="flex flex-wrap gap-2">{refs.length ? refs.map((ref) => <span key={ref} className="rounded-full bg-white px-2 py-1 text-slate-700">{ref}</span>) : '暂无引用'}</div>
-              </div>
-              {!agentId ? (
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-3 text-xs text-slate-500">
-                  通用问答会先帮你处理常规问题。如果更适合业务场景，我们会推荐合适的助手。
-                </div>
-              ) : null}
-              {!agentId && recommendedAgentName ? (
-                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
-                  <div className="font-medium">建议你试试：{recommendedAgentName}</div>
-                  <div className="mt-1 leading-5">{recommendedReason}</div>
-                  <button
-                    type="button"
-                    className="mt-3 inline-flex items-center rounded-full bg-blue-600 px-3 py-1 text-white transition hover:bg-blue-700"
-                    onClick={() => setAgentId(recommendedAgentId ?? '')}
-                  >
-                    切换到该助手
-                  </button>
-                </div>
-              ) : null}
-              {agentId ? (
-                <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                  <div>当前已选择专家助手，回答会尽量按该助手的知识域与能力来处理。</div>
-                  <div className="flex flex-wrap gap-2">
-                    {parseSkills(agents.find((agent) => agent.agent_id === agentId)?.skills_json).map((skillId: string) => (
-                      <span key={skillId} className="rounded-full bg-white px-2 py-1 text-slate-700">{skillLabel(skillId)}</span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              <div className="max-h-40 overflow-auto whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-900">
-                {answer || '回答会显示在这里。'}
               </div>
             </CardContent>
           </Card>
         </div>
+      ) : null}
+
+      {notice ? (
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(true);
+            setNotice(null);
+          }}
+          className="fixed bottom-6 right-6 z-[70] rounded-2xl border border-blue-200 bg-white px-4 py-3 text-sm font-medium text-slate-900 shadow-[0_16px_40px_rgba(15,23,42,0.18)] transition hover:border-blue-300 hover:bg-blue-50"
+        >
+          {notice}
+        </button>
       ) : null}
     </>
   );

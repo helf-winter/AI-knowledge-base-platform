@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,7 +23,7 @@ from app.schemas.common import APIResponse
 from app.schemas.conversation import ConversationTurnCreate, ConversationTurnRead
 from app.schemas.evaluation import EvaluationCaseCreate, EvaluationCaseRead, EvaluationRunCreate, EvaluationRunRead, EvaluationResultRead
 from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead
-from app.schemas.knowledge import ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, SearchRequest, SearchResponse
+from app.schemas.knowledge import ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, SearchRequest, SearchResponse
 from app.schemas.observability import AlertEventRead, AlertRuleCreate, AlertRuleRead, MetricSnapshotCreate
 from app.schemas.task import TaskRead
 from app.services.audit import AuditService
@@ -55,6 +57,97 @@ def _handle_app_error(exc: Exception) -> None:
     elif getattr(exc, "code", None) == "VALIDATION_ERROR":
         status_code = 422
     raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
+def _normalize_session_id(session_id: str | None, user_id: str) -> str:
+    if session_id and len(session_id) <= 36:
+        return session_id
+    if session_id:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{user_id}:{session_id}"))
+    return str(uuid.uuid4())
+
+
+def _looks_like_unknown_answer(answer: str) -> bool:
+    lowered = answer.strip().lower()
+    markers = [
+        "不知道",
+        "没有找到",
+        "未找到",
+        "没有检索到",
+        "上下文不足",
+        "资料不足",
+        "知识库里没有",
+        "无法回答",
+        "不能回答",
+        "not enough",
+        "no relevant",
+    ]
+    return any(marker in lowered for marker in markers)
+
+
+def _source_documents_for_query(service: KnowledgeService, query: str, user_id: str, answer: str | None = None) -> list[dict[str, str | int]]:
+    try:
+        hits = service.search(query=query, top_k=5, user_id=user_id)
+    except Exception:
+        return []
+    if not hits:
+        return []
+
+    indexed_sources = [
+        {
+            "source_number": idx,
+            "document_id": hit.chunk.document.document_id,
+            "file_name": hit.chunk.document.file_name,
+            "score": hit.score,
+        }
+        for idx, hit in enumerate(hits, start=1)
+    ]
+
+    cited_numbers: list[int] = []
+    if answer:
+        seen_numbers: set[int] = set()
+        for raw in re.findall(r"\[(\d+)\]", answer):
+            number = int(raw)
+            if 1 <= number <= len(indexed_sources) and number not in seen_numbers:
+                cited_numbers.append(number)
+                seen_numbers.add(number)
+
+    if cited_numbers:
+        return [
+            {
+                "source_number": item["source_number"],
+                "document_id": item["document_id"],
+                "file_name": item["file_name"],
+            }
+            for item in indexed_sources
+            if int(item["source_number"]) in cited_numbers
+        ]
+
+    grouped: dict[str, dict[str, object]] = {}
+    for item in indexed_sources:
+        document_id = str(item["document_id"])
+        current = grouped.setdefault(
+            document_id,
+            {
+                "source_number": item["source_number"],
+                "document_id": document_id,
+                "file_name": item["file_name"],
+                "best_score": 0.0,
+                "total_score": 0.0,
+                "hit_count": 0,
+            },
+        )
+        current["best_score"] = max(float(current["best_score"]), float(item["score"]))
+        current["total_score"] = float(current["total_score"]) + float(item["score"])
+        current["hit_count"] = int(current["hit_count"]) + 1
+
+    ranked = sorted(
+        grouped.values(),
+        key=lambda item: (float(item["best_score"]), float(item["total_score"]), int(item["hit_count"])),
+        reverse=True,
+    )
+    best = ranked[0]
+    return [{"source_number": int(best["source_number"]), "document_id": str(best["document_id"]), "file_name": str(best["file_name"])}]
 
 
 @router.post("/auth/register", response_model=APIResponse[TokenResponse])
@@ -104,12 +197,37 @@ def list_documents(limit: int = Query(default=50, ge=1, le=200), offset: int = Q
     return APIResponse(data=[DocumentItem(document_id=item.document_id, file_name=item.file_name, file_type=item.file_type, file_size=item.file_size, parse_status=item.parse_status, visibility=item.visibility, created_at=item.created_at.isoformat() if item.created_at else None, updated_at=item.updated_at.isoformat() if item.updated_at else None) for item in items])
 
 
+@router.get("/documents/{document_id}/raw")
+def get_document_raw(document_id: str, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+    document = KnowledgeService(db).get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    if document.storage_path.startswith("generated://"):
+        raise HTTPException(status_code=404, detail="raw file is not available for generated documents")
+
+    file_path = Path(document.storage_path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="raw file not found")
+
+    media_types = {
+        "pdf": "application/pdf",
+        "txt": "text/plain; charset=utf-8",
+        "md": "text/markdown; charset=utf-8",
+        "csv": "text/csv; charset=utf-8",
+    }
+    return FileResponse(
+        path=file_path,
+        filename=document.file_name,
+        media_type=media_types.get(document.file_type.lower(), "application/octet-stream"),
+    )
+
+
 @router.get("/documents/{document_id}", response_model=APIResponse[DocumentDetail])
 def get_document(document_id: str, db: Session = Depends(get_db), _user=Depends(get_current_user)):
     document = KnowledgeService(db).get_document(document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="document not found")
-    return APIResponse(data=DocumentDetail(document_id=document.document_id, file_name=document.file_name, file_type=document.file_type, file_size=document.file_size, parse_status=document.parse_status, visibility=document.visibility, storage_path=document.storage_path, checksum=document.checksum, content_text=document.content_text, created_at=document.created_at.isoformat() if document.created_at else None, updated_at=document.updated_at.isoformat() if document.updated_at else None, chunks=[ChunkItem(chunk_id=chunk.chunk_id, document_id=chunk.document_id, chunk_index=chunk.chunk_index, content=chunk.content, page_start=chunk.page_start, page_end=chunk.page_end, score=None, source_file_name=document.file_name) for chunk in document.chunks]))
+    return APIResponse(data=DocumentDetail(document_id=document.document_id, file_name=document.file_name, file_type=document.file_type, file_size=document.file_size, parse_status=document.parse_status, visibility=document.visibility, storage_path=document.storage_path, checksum=document.checksum, content_text=document.content_text, created_at=document.created_at.isoformat() if document.created_at else None, updated_at=document.updated_at.isoformat() if document.updated_at else None, chunks=[ChunkItem(chunk_id=chunk.chunk_id, document_id=chunk.document_id, chunk_index=chunk.chunk_index, content=chunk.content, page_start=chunk.page_start, page_end=chunk.page_end, score=None, source_file_name=document.file_name, file_type=document.file_type, updated_at=document.updated_at.isoformat() if document.updated_at else None) for chunk in document.chunks]))
 
 
 @router.delete("/documents/{document_id}", response_model=APIResponse[dict[str, Any]])
@@ -152,7 +270,7 @@ def retry_task(task_id: str, db: Session = Depends(get_db), _user=Depends(requir
 def search_knowledge(payload: SearchRequest, db: Session = Depends(get_db), _user=Depends(get_current_user)):
     try:
         hits = KnowledgeService(db).search(query=payload.query, top_k=payload.top_k, user_id=payload.user_id)
-        results = [ChunkItem(chunk_id=item.chunk.chunk_id, document_id=item.chunk.document_id, chunk_index=item.chunk.chunk_index, content=item.chunk.content, page_start=item.chunk.page_start, page_end=item.chunk.page_end, score=item.score, source_file_name=item.chunk.document.file_name) for item in hits]
+        results = [ChunkItem(chunk_id=item.chunk.chunk_id, document_id=item.chunk.document_id, chunk_index=item.chunk.chunk_index, content=item.chunk.content, page_start=item.chunk.page_start, page_end=item.chunk.page_end, score=item.score, source_file_name=item.chunk.document.file_name, file_type=item.chunk.document.file_type, updated_at=item.chunk.document.updated_at.isoformat() if item.chunk.document.updated_at else None) for item in hits]
         return APIResponse(data=SearchResponse(query=payload.query, results=results))
     except Exception as exc:
         _handle_app_error(exc)
@@ -162,34 +280,65 @@ def search_knowledge(payload: SearchRequest, db: Session = Depends(get_db), _use
 def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
     service = KnowledgeService(db)
     trace_id = str(uuid.uuid4())
-    session_id = payload.session_id or f"session-{user.user_id}-{uuid.uuid4()}"
+    session_id = _normalize_session_id(payload.session_id, user.user_id)
 
     def event_stream():
         try:
-            answer_stream, refs, _traces = service.stream_answer(query=payload.query, top_k=5, user_id=user.user_id, casual=not payload.agent_id)
+            recommendation = service.agent_recommender.recommend(payload.query, agent_id=payload.agent_id)
+            expert_stream, refs, _traces = service.stream_answer(query=payload.query, top_k=5, user_id=user.user_id, casual=False)
+            expert_answer = "".join(chunk for chunk in expert_stream if chunk)
+            should_fallback = (not refs) or _looks_like_unknown_answer(expert_answer)
+            answer_stream = None
+            visible_refs = refs
+            source_documents: list[dict[str, str | int]] = []
+            mode = "knowledge"
+            can_expand = False
+
+            if should_fallback:
+                answer_stream, _general_refs, _general_traces = service.stream_answer(query=payload.query, top_k=5, user_id=user.user_id, casual=True)
+                visible_refs = []
+                source_documents = []
+                mode = "auto_general"
+                can_expand = True
             collected = ""
 
             yield f"data: [TRACE_ID] {trace_id}\n\n"
-            if refs:
-                yield f"data: [REFS] {'|'.join(refs)}\n\n"
 
-            for chunk in answer_stream:
-                if not chunk:
-                    continue
-                collected += chunk
-                yield f"data: {chunk}\n\n"
+            if answer_stream is None:
+                collected = expert_answer
+                if collected:
+                    yield f"data: {json.dumps({'delta': collected}, ensure_ascii=False)}\n\n"
+            else:
+                for chunk in answer_stream:
+                    if not chunk:
+                        continue
+                    collected += chunk
+                    yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"
 
-            confidence = 0.0
-            hits_count = 0
+            if visible_refs:
+                source_documents = _source_documents_for_query(service, payload.query, user.user_id, collected)
+            confidence = 0.75 if collected.strip() else 0.0
+            hits_count = len(visible_refs)
+            ConversationService(db).create_turn(
+                ConversationTurnCreate(
+                    session_id=session_id,
+                    user_id=user.user_id,
+                    query_text=payload.query,
+                    answer_text=collected.strip() or "未生成回答",
+                    confidence=confidence,
+                    source_refs_json=json.dumps(source_documents, ensure_ascii=False),
+                    trace_id=trace_id,
+                )
+            )
             AuditService(db).record(
                 user_id=user.user_id,
                 action="chat_stream",
                 resource_type="conversation",
                 resource_id=session_id,
                 trace_id=trace_id,
-                payload={"query": payload.query, "chunk_count": len(refs), "answer_empty": not bool(collected.strip())},
+                payload={"query": payload.query, "mode": mode, "chunk_count": len(visible_refs), "answer_empty": not bool(collected.strip()), "can_expand": can_expand},
             )
-            yield f"data: {json.dumps({'confidence': confidence, 'chunk_count': hits_count, 'trace_id': trace_id}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'confidence': confidence, 'chunk_count': hits_count, 'trace_id': trace_id, 'session_id': session_id, 'mode': mode, 'can_expand': can_expand, 'expansion_question': '是否扩充该知识内容？' if can_expand else None, 'sources': source_documents, 'recommended_agent_id': recommendation.agent_id if recommendation else None, 'recommended_agent_name': recommendation.agent_name if recommendation else None, 'recommended_reason': recommendation.reason if recommendation else None}, ensure_ascii=False)}\n\n"
         except Exception as exc:
             try:
                 db.rollback()
@@ -219,6 +368,23 @@ def create_feedback(payload: FeedbackCreate, db: Session = Depends(get_db), user
     feedback = KnowledgeService(db).record_feedback(session_id=payload.session_id, answer_id=payload.answer_id, rating=payload.rating, is_helpful=payload.is_helpful, comment=payload.comment, issue_type=payload.issue_type)
     AuditService(db).record(user_id=user.user_id, action="feedback", resource_type="feedback", resource_id=feedback.feedback_id, trace_id=payload.session_id, payload=payload.model_dump())
     return APIResponse(data={"feedback_id": feedback.feedback_id})
+
+
+@router.post("/knowledge/expand", response_model=APIResponse[KnowledgeExpansionResponse])
+def expand_knowledge(payload: KnowledgeExpansionRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    try:
+        result = KnowledgeService(db).expand_knowledge_from_answer(query=payload.query, answer=payload.answer, user_id=user.user_id, target_document_id=payload.target_document_id)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="expand_knowledge",
+            resource_type="document",
+            resource_id=result["document_id"],
+            trace_id=payload.trace_id or str(uuid.uuid4()),
+            payload={"query": payload.query, "action": result["action"], "title": result["title"]},
+        )
+        return APIResponse(data=KnowledgeExpansionResponse(**result))
+    except Exception as exc:
+        _handle_app_error(exc)
 
 
 @router.get("/conversation/turns", response_model=APIResponse[list[ConversationTurnRead]])

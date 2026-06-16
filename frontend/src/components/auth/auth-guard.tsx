@@ -15,11 +15,13 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     const isPublic = PUBLIC_PATHS.includes(pathname);
 
     if (!token && !isPublic) {
+      setReady(true);
       router.replace('/login');
       return;
     }
 
     if (token && pathname === '/login') {
+      setReady(true);
       router.replace('/');
       return;
     }
