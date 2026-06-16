@@ -63,11 +63,15 @@
 .
 ├── app/                 # FastAPI 后端应用
 ├── alembic/             # 数据库迁移
+├── docs/                # 项目文档与课题参考资料
+│   ├── guides/          # 启动、架构、演示等交付说明
+│   └── reference/       # 需求、技术方案、课题要求等参考资料
 ├── frontend/            # Next.js 前端应用
 ├── scripts/             # 初始化脚本
-├── README.md            # 项目说明
-├── 启动文档.md           # 本地启动说明
-└── 演示文档.md           # 课题演示路径
+├── start.ps1            # Windows 一键启动脚本
+├── start.bat            # Windows 一键启动入口
+├── docker-compose.yml   # Docker Compose 部署编排
+└── README.md            # 项目说明
 ```
 
 ## 本地启动
@@ -234,4 +238,4 @@ cd frontend
 npm run build
 ```
 
-更完整的课堂/答辩演示路径见 [演示文档.md](./演示文档.md)。
+更完整的课堂/答辩演示路径见 [演示文档.md](./docs/guides/演示文档.md)。

@@ -33,6 +33,7 @@ knowledge.db
 Thumbs.db
 
 #md
+docs/reference/
 problems.md
 需求文档.md
 项目任务拆解.md
