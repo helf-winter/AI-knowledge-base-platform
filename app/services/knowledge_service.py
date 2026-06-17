@@ -132,6 +132,7 @@ class KnowledgeService:
             self.tasks.mark_succeeded(task.task_id)
             self._ensure_metadata(document)
         except Exception as exc:
+            self.db.rollback()
             self.tasks.mark_failed(task.task_id, str(exc))
             raise
         return document
@@ -186,6 +187,7 @@ class KnowledgeService:
             document.parse_status = "succeeded"
             self.db.commit()
         except Exception:
+            self.db.rollback()
             document.parse_status = "failed"
             self.db.commit()
             raise

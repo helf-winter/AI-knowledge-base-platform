@@ -51,7 +51,6 @@ class AuthService:
             ).hex()
             return hmac.compare_digest(candidate, digest)
 
-        # Backward compatibility for early demo accounts created with sha256.
         legacy = hashlib.sha256(plain_password.encode("utf-8")).hexdigest()
         return hmac.compare_digest(legacy, password_hash)
 
@@ -90,27 +89,43 @@ class AuthService:
 
         self._assign_role(admin.user_id, admin_role.role_id)
 
-        demo_user = self.db.execute(select(User).where(or_(User.username == "zhangsan", User.employee_no == "E1001"))).scalar_one_or_none()
-        if demo_user is None:
-            demo_user = User(
-                user_id=str(uuid.uuid4()),
-                department_id=it_department.department_id,
-                username="zhangsan",
-                employee_no="E1001",
-                display_name="张三",
-                email="zhangsan@example.com",
-                position="研发工程师",
-                permission_level=3,
-                initial_password_code="654321",
-                is_first_login=True,
-                status="active",
-                password_hash=self._hash_password("654321"),
-                is_active=True,
-            )
-            self.db.add(demo_user)
-            self.db.flush()
+        demo_users = [
+            ("zhangsan", "E1001", "张三", "zhangsan@example.com", "研发工程师"),
+            ("lisi", "E1002", "李四", "lisi@example.com", "数据处理专员"),
+            ("wangwu", "E1003", "王五", "wangwu@example.com", "外观设计师"),
+        ]
+        for username, employee_no, display_name, email, position in demo_users:
+            demo_user = self.db.execute(select(User).where(or_(User.username == username, User.employee_no == employee_no))).scalar_one_or_none()
+            if demo_user is None:
+                demo_user = User(
+                    user_id=str(uuid.uuid4()),
+                    department_id=it_department.department_id,
+                    username=username,
+                    employee_no=employee_no,
+                    display_name=display_name,
+                    email=email,
+                    position=position,
+                    permission_level=3,
+                    initial_password_code="654321",
+                    is_first_login=True,
+                    status="active",
+                    password_hash=self._hash_password("654321"),
+                    is_active=True,
+                )
+                self.db.add(demo_user)
+                self.db.flush()
+            else:
+                demo_user.department_id = demo_user.department_id or it_department.department_id
+                demo_user.employee_no = demo_user.employee_no or employee_no
+                demo_user.display_name = demo_user.display_name or display_name
+                demo_user.email = demo_user.email or email
+                demo_user.position = demo_user.position or position
+                demo_user.permission_level = int(demo_user.permission_level or 3)
+                demo_user.initial_password_code = demo_user.initial_password_code or "654321"
+                demo_user.status = demo_user.status or ("active" if demo_user.is_active else "disabled")
 
-        self._assign_role(demo_user.user_id, user_role.role_id)
+            self._assign_role(demo_user.user_id, user_role.role_id)
+
         self.db.commit()
 
     def register(self, username: str, password: str, display_name: str, email: str | None = None) -> tuple[AuthenticatedUser, str]:
