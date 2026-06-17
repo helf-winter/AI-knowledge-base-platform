@@ -39,9 +39,32 @@ async function fetchConversations(sessionId?: string) {
   return json.data as ConversationItem[];
 }
 
+async function submitFeedback(item: ConversationItem, isHelpful: boolean, rating: number, issueType?: string) {
+  const res = await fetch(`${API_BASE}/api/v1/feedback`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify({
+      session_id: item.session_id,
+      answer_id: item.turn_id,
+      rating,
+      is_helpful: isHelpful,
+      issue_type: issueType,
+      comment: isHelpful ? '用户认为回答有帮助' : '用户认为回答不完整或未解决问题',
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '提交反馈失败');
+  }
+}
+
 export default function ConversationsPage() {
   const [items, setItems] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [submittingFeedbackId, setSubmittingFeedbackId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState('');
   const [traceId, setTraceId] = useState('');
 
@@ -143,6 +166,45 @@ export default function ConversationsPage() {
 
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600 break-all">
                   来源依据：{item.source_refs_json}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={submittingFeedbackId === item.turn_id}
+                    onClick={async () => {
+                      try {
+                        setSubmittingFeedbackId(item.turn_id);
+                        await submitFeedback(item, true, 5);
+                        alert('反馈已记录');
+                      } catch (error) {
+                        alert(error instanceof Error ? error.message : '提交反馈失败');
+                      } finally {
+                        setSubmittingFeedbackId(null);
+                      }
+                    }}
+                  >
+                    有帮助
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={submittingFeedbackId === item.turn_id}
+                    onClick={async () => {
+                      try {
+                        setSubmittingFeedbackId(item.turn_id);
+                        await submitFeedback(item, false, 1, 'incomplete_answer');
+                        alert('反馈已记录，系统会纳入自动学习');
+                      } catch (error) {
+                        alert(error instanceof Error ? error.message : '提交反馈失败');
+                      } finally {
+                        setSubmittingFeedbackId(null);
+                      }
+                    }}
+                  >
+                    没解决
+                  </Button>
                 </div>
               </CardContent>
             </Card>

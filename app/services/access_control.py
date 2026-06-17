@@ -11,9 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import NotFoundAppError, PermissionAppError, ValidationAppError
+from app.agents.review_agent import ReviewAgent
 from app.models.core import Department, User
 from app.models.document import AccessRequest, Document, DocumentAccessGrant, PublicKnowledgeRef
 from app.schemas.knowledge import AccessRequestCreate
+from app.schemas.review import ReviewRequest
 from app.services.auth import AuthenticatedUser
 
 settings = get_settings()
@@ -160,13 +162,49 @@ class DocumentAccessService:
         document = self.db.get(Document, request.document_id)
         applicant = self.db.get(User, request.user_id)
         if document is None or applicant is None:
-            suggestion = {"suggestion": "reject", "risk_level": "high", "reason": "申请关联的用户或文档不存在，无法完成权限核验。"}
+            result = ReviewAgent(self.db).review(
+                ReviewRequest(
+                    review_type="document_access",
+                    subject={
+                        "reason": request.reason,
+                        "business_purpose": request.business_purpose,
+                        "expected_duration": request.expected_duration,
+                        "applicant": None,
+                    },
+                    context={"document": None, "error": "申请关联的用户或文档不存在"},
+                )
+            )
         else:
-            suggestion = self._ask_deepseek_for_review(request, applicant, document) or self._fallback_ai_review(request, applicant, document)
+            result = ReviewAgent(self.db).review(
+                ReviewRequest(
+                    review_type="document_access",
+                    subject={
+                        "reason": request.reason,
+                        "business_purpose": request.business_purpose,
+                        "expected_duration": request.expected_duration,
+                        "applicant": {
+                            "employee_no": applicant.employee_no,
+                            "permission_level": applicant.permission_level,
+                            "position": applicant.position,
+                        },
+                    },
+                    context={
+                        "document": {
+                            "file_name": document.file_name,
+                            "knowledge_space": document.knowledge_space,
+                            "visibility_type": document.visibility_type,
+                            "security_level": document.security_level,
+                            "min_permission_level": document.min_permission_level,
+                            "allowed_departments": document.allowed_departments,
+                            "allowed_job_categories": document.allowed_job_categories,
+                        }
+                    },
+                )
+            )
 
-        request.ai_suggestion = self._normalize_suggestion(suggestion.get("suggestion"))
-        request.ai_risk_level = self._normalize_risk_level(suggestion.get("risk_level"))
-        request.ai_reason = (suggestion.get("reason") or "").strip()[:2000]
+        request.ai_suggestion = result.suggestion
+        request.ai_risk_level = result.risk_level
+        request.ai_reason = result.reason.strip()[:2000]
         self.db.commit()
         self.db.refresh(request)
         return {

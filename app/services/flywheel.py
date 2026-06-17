@@ -11,6 +11,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.review_agent import ReviewAgent
 from app.core.config import get_settings
 from app.core.exceptions import NotFoundAppError, ValidationAppError
 from app.models.core import KnowledgeMetadata, TaskRecord
@@ -19,6 +20,7 @@ from app.models.flywheel import KnowledgeGap
 from app.models.vector import ChunkEmbedding
 from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapReview, LearningGapDraftCreate, LearningGapDraftReview
 from app.schemas.knowledge import KnowledgePublishRequestCreate
+from app.schemas.review import ReviewRequest
 from app.services.auth import AuthenticatedUser
 from app.services.embedding import fake_embedding
 from app.services.knowledge_publish import KnowledgePublishService
@@ -134,6 +136,21 @@ class KnowledgeFlywheelService:
         gap.target_category = payload.target_category.strip()
         gap.allowed_job_categories = payload.allowed_job_categories.strip()
         gap.business_purpose = payload.business_purpose.strip()
+        review = ReviewAgent(self.db).review(
+            ReviewRequest(
+                review_type="learning_gap_draft",
+                subject={
+                    "query": gap.query_text,
+                    "draft_content": content,
+                    "pending_confirmations": pending_confirmations.splitlines(),
+                    "target_category": payload.target_category,
+                    "allowed_job_categories": payload.allowed_job_categories,
+                    "business_purpose": payload.business_purpose,
+                },
+                context={"gap_id": gap.gap_id},
+            )
+        )
+        gap.evidence = self._append_evidence(gap.evidence, json.dumps({"draft_review": review.model_dump()}, ensure_ascii=False))
         gap.status = "drafted"
         self.db.commit()
         self.db.refresh(gap)
@@ -209,8 +226,10 @@ class KnowledgeFlywheelService:
         for turn in turns:
             confidence = float(getattr(turn, "confidence", 0.0) or 0.0)
             refs = getattr(turn, "source_refs_json", None) or "[]"
-            if confidence >= min_confidence:
+            has_sources = refs.strip() not in {"", "[]", "null"}
+            if confidence >= min_confidence and has_sources:
                 continue
+            issue_type = "low_confidence_answer" if confidence < min_confidence else "answer_without_sources"
             existing = self.db.execute(
                 select(KnowledgeGap).where(
                     KnowledgeGap.session_id == turn.session_id,
@@ -219,15 +238,28 @@ class KnowledgeFlywheelService:
             ).scalar_one_or_none()
             if existing is not None:
                 continue
+            review = ReviewAgent(self.db).review(
+                ReviewRequest(
+                    review_type="answer_quality",
+                    subject={
+                        "query": turn.query_text,
+                        "answer": turn.answer_text,
+                        "confidence": confidence,
+                        "mode": "auto_learning_scan",
+                        "has_sources": has_sources,
+                    },
+                    context={"session_id": turn.session_id, "answer_id": getattr(turn, "turn_id", None)},
+                )
+            )
             self.create_gap(
                 KnowledgeGapCreate(
                     query_text=turn.query_text,
                     session_id=turn.session_id,
                     user_id=turn.user_id,
                     answer_id=getattr(turn, "turn_id", None),
-                    issue_type="low_confidence_answer",
+                    issue_type=issue_type,
                     confidence=confidence,
-                    evidence=refs,
+                    evidence=json.dumps(review.model_dump(), ensure_ascii=False),
                 )
             )
             created += 1

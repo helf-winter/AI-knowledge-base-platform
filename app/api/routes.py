@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.learning_agent import LearningAgent
+from app.agents.review_agent import ReviewAgent
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_roles
 from app.models.core import AuditLog
@@ -25,6 +26,7 @@ from app.schemas.evaluation import EvaluationCaseCreate, EvaluationCaseRead, Eva
 from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead, LearningGapDraftCreate, LearningGapDraftRead, LearningGapDraftReview
 from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, PublicKnowledgeRefRead, SearchRequest, SearchResponse
 from app.schemas.observability import AlertEventRead, AlertRuleCreate, AlertRuleRead, MetricSnapshotCreate
+from app.schemas.review import ReviewRequest
 from app.schemas.task import TaskRead
 from app.services.audit import AuditService
 from app.services.auth import AuthService
@@ -801,9 +803,9 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
 
             if visible_refs:
                 source_documents = _source_documents_for_query(service, payload.query, user.user_id, collected)
-            confidence = 0.75 if collected.strip() else 0.0
+            confidence = 0.25 if should_fallback else (0.75 if collected.strip() else 0.0)
             hits_count = len(visible_refs)
-            ConversationService(db).create_turn(
+            turn = ConversationService(db).create_turn(
                 ConversationTurnCreate(
                     session_id=session_id,
                     user_id=user.user_id,
@@ -814,6 +816,35 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
                     trace_id=trace_id,
                 )
             )
+            if should_fallback:
+                try:
+                    review = ReviewAgent(db).review(
+                        ReviewRequest(
+                            review_type="answer_quality",
+                            subject={
+                                "query": payload.query,
+                                "answer": collected.strip(),
+                                "confidence": confidence,
+                                "mode": mode,
+                                "has_sources": bool(source_documents),
+                            },
+                            context={"trace_id": trace_id, "session_id": session_id},
+                        )
+                    )
+                    if review.suggestion in {"review", "reject"}:
+                        service.flywheel.create_gap(
+                            KnowledgeGapCreate(
+                                query_text=payload.query,
+                                session_id=session_id,
+                                user_id=user.user_id,
+                                answer_id=turn.turn_id,
+                                issue_type="fallback_to_general_answer",
+                                confidence=confidence,
+                                evidence=json.dumps(review.model_dump(), ensure_ascii=False),
+                            )
+                        )
+                except Exception:
+                    db.rollback()
             AuditService(db).record(
                 user_id=user.user_id,
                 action="chat_stream",
@@ -849,7 +880,7 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
 
 @router.post("/feedback", response_model=APIResponse[dict[str, Any]])
 def create_feedback(payload: FeedbackCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    feedback = KnowledgeService(db).record_feedback(session_id=payload.session_id, answer_id=payload.answer_id, rating=payload.rating, is_helpful=payload.is_helpful, comment=payload.comment, issue_type=payload.issue_type)
+    feedback = KnowledgeService(db).record_feedback(session_id=payload.session_id, answer_id=payload.answer_id, rating=payload.rating, is_helpful=payload.is_helpful, comment=payload.comment, issue_type=payload.issue_type, user_id=user.user_id)
     AuditService(db).record(user_id=user.user_id, action="feedback", resource_type="feedback", resource_id=feedback.feedback_id, trace_id=payload.session_id, payload=payload.model_dump())
     return APIResponse(data={"feedback_id": feedback.feedback_id})
 

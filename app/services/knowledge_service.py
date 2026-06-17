@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.agents.expert_agent import ExpertAgent
+from app.agents.review_agent import ReviewAgent
 from app.core.config import get_settings
 from app.core.exceptions import ValidationAppError
 from app.core.skills import SkillRegistry
@@ -17,6 +18,7 @@ from app.models.core import KnowledgeMetadata, TaskRecord
 from app.models.document import Document, DocumentChunk, Feedback, PublicKnowledgeRef
 from app.models.vector import ChunkEmbedding
 from app.schemas.flywheel import KnowledgeGapCreate
+from app.schemas.review import ReviewRequest
 from app.services.conversation import ConversationService
 from app.services.embedding import fake_embedding
 from app.services.flywheel import KnowledgeFlywheelService
@@ -453,4 +455,47 @@ class KnowledgeService:
         self.db.add(feedback)
         self.db.commit()
         self.db.refresh(feedback)
+        if (not is_helpful) or rating <= 2:
+            turn = self.db.get(ConversationTurn, answer_id)
+            if turn is None:
+                turn = self.db.execute(
+                    select(ConversationTurn)
+                    .where(ConversationTurn.session_id == session_id)
+                    .order_by(ConversationTurn.created_at.desc())
+                ).scalars().first()
+            if turn is not None:
+                try:
+                    review = ReviewAgent(self.db).review(
+                        ReviewRequest(
+                            review_type="answer_quality",
+                            subject={
+                                "query": turn.query_text,
+                                "answer": turn.answer_text,
+                                "confidence": turn.confidence,
+                                "mode": "feedback",
+                                "has_sources": (turn.source_refs_json or "[]").strip() not in {"", "[]", "null"},
+                                "user_feedback": {
+                                    "rating": rating,
+                                    "is_helpful": is_helpful,
+                                    "comment": comment,
+                                    "issue_type": issue_type,
+                                },
+                            },
+                            context={"session_id": session_id, "answer_id": answer_id},
+                        )
+                    )
+                    if review.suggestion in {"review", "reject"}:
+                        self.flywheel.create_gap(
+                            KnowledgeGapCreate(
+                                query_text=turn.query_text,
+                                session_id=turn.session_id,
+                                user_id=user_id or turn.user_id,
+                                answer_id=turn.turn_id,
+                                issue_type=issue_type or "negative_user_feedback",
+                                confidence=min(float(turn.confidence or 0.0), 0.3),
+                                evidence=json.dumps(review.model_dump(), ensure_ascii=False),
+                            )
+                        )
+                except Exception:
+                    self.db.rollback()
         return feedback
