@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: ai-kb-postgres
     restart: unless-stopped
     environment:
@@ -27,7 +27,6 @@ services:
       - .env.production
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-knowledge_base}
-      TESSERACT_CMD: /usr/bin/tesseract
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:

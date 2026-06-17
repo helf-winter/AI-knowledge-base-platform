@@ -15,6 +15,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
     op.create_table(
         "chunk_embeddings",
         sa.Column("embedding_id", sa.String(length=36), primary_key=True),
@@ -27,7 +28,6 @@ def upgrade() -> None:
     op.create_index("ix_chunk_embeddings_chunk_id", "chunk_embeddings", ["chunk_id"])
 
     # Create pgvector indexes only when the extension is available in PostgreSQL.
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_chunk_embeddings_vector_hnsw ON chunk_embeddings USING hnsw (vector vector_cosine_ops) WITH (m = 16, ef_construction = 64);"
     )

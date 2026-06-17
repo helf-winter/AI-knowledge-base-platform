@@ -19,6 +19,7 @@ def upgrade() -> None:
         sa.Column("turn_id", sa.String(length=36), primary_key=True),
         sa.Column("session_id", sa.String(length=36), nullable=False),
         sa.Column("user_id", sa.String(length=36), nullable=True),
+        sa.Column("trace_id", sa.String(length=36), nullable=True),
         sa.Column("query_text", sa.Text(), nullable=False),
         sa.Column("answer_text", sa.Text(), nullable=False),
         sa.Column("confidence", sa.Float(), nullable=False, server_default="0.0"),
@@ -29,9 +30,11 @@ def upgrade() -> None:
     )
     op.create_index("ix_conversation_turns_session_id", "conversation_turns", ["session_id"])
     op.create_index("ix_conversation_turns_user_id", "conversation_turns", ["user_id"])
+    op.create_index("ix_conversation_turns_trace_id", "conversation_turns", ["trace_id"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_conversation_turns_trace_id", table_name="conversation_turns")
     op.drop_index("ix_conversation_turns_user_id", table_name="conversation_turns")
     op.drop_index("ix_conversation_turns_session_id", table_name="conversation_turns")
     op.drop_table("conversation_turns")
