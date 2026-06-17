@@ -104,6 +104,7 @@ def _current_user_response(user) -> CurrentUserRead:
 def _document_item_response(document, decision: AccessDecision) -> DocumentItem:
     return DocumentItem(
         document_id=document.document_id,
+        owner_user_id=document.owner_user_id,
         file_name=document.file_name,
         file_type=document.file_type,
         file_size=document.file_size,
@@ -389,6 +390,7 @@ def get_document(document_id: str, db: Session = Depends(get_db), user=Depends(g
     return APIResponse(
         data=DocumentDetail(
             document_id=document.document_id,
+            owner_user_id=document.owner_user_id,
             file_name=document.file_name,
             file_type=document.file_type,
             file_size=document.file_size,

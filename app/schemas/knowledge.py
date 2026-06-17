@@ -11,6 +11,7 @@ class DocumentCreateResponse(BaseModel):
 
 class DocumentItem(BaseModel):
     document_id: str
+    owner_user_id: str | None = None
     file_name: str
     file_type: str
     file_size: int
@@ -52,6 +53,7 @@ class ChunkItem(BaseModel):
 
 class DocumentDetail(BaseModel):
     document_id: str
+    owner_user_id: str | None = None
     file_name: str
     file_type: str
     file_size: int

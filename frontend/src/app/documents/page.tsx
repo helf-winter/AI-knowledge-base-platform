@@ -14,6 +14,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
 type DocumentItem = {
   document_id: string;
+  owner_user_id?: string | null;
   file_name: string;
   file_type: string;
   file_size: number;
@@ -234,6 +235,7 @@ function accessStatusClass(status: string) {
 
 export default function DocumentsPage() {
   const router = useRouter();
+  const currentUserId = getCurrentUserId();
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -349,6 +351,16 @@ export default function DocumentsPage() {
     setPublishReason('该个人知识已经整理完成，希望发布到公有知识库供团队复用。');
     setPublishBusinessPurpose('');
   };
+
+  const canPublishDocument = (doc: DocumentItem | null) =>
+    Boolean(
+      doc &&
+        isAccessible(doc) &&
+        doc.owner_user_id === currentUserId &&
+        doc.knowledge_space === 'personal' &&
+        doc.publish_status !== 'pending' &&
+        doc.publish_status !== 'approved',
+    );
 
   return (
     <div className="space-y-6">
@@ -546,7 +558,7 @@ export default function DocumentsPage() {
                             申请
                           </Button>
                         )}
-                        {canAccess && doc.knowledge_space === 'personal' && doc.publish_status !== 'pending' && doc.publish_status !== 'approved' && (
+                        {canPublishDocument(doc) && (
                           <Button
                             variant="outline"
                             size="sm"
@@ -722,7 +734,7 @@ export default function DocumentsPage() {
                         申请访问 <Send size={14} />
                       </Button>
                     )}
-                    {isAccessible(selectedDocument) && selectedDocument.knowledge_space === 'personal' && selectedDocument.publish_status !== 'pending' && selectedDocument.publish_status !== 'approved' && (
+                    {canPublishDocument(selectedDocument) && (
                       <Button className="w-full" variant="outline" onClick={() => openPublishDialog({ document_id: selectedDocument.document_id, file_name: selectedDocument.file_name })}>
                         提交公有审核 <Send size={14} />
                       </Button>
