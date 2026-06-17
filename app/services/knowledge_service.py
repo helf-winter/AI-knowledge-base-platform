@@ -114,6 +114,11 @@ class KnowledgeService:
             checksum=checksum,
             parse_status="processing",
             visibility="private",
+            visibility_type="private",
+            knowledge_space="personal",
+            visibility_scope="owner",
+            publish_status="none",
+            is_public=False,
             content_text=None,
         )
         self.db.add(document)
@@ -351,7 +356,12 @@ class KnowledgeService:
             storage_path=f"generated://knowledge-expansion/{doc_id}.md",
             checksum=hashlib.sha256(encoded).hexdigest(),
             parse_status="succeeded",
-            visibility="internal",
+            visibility="private",
+            visibility_type="private",
+            knowledge_space="personal",
+            visibility_scope="owner",
+            publish_status="none",
+            is_public=False,
             content_text=content,
         )
         self.db.add(document)

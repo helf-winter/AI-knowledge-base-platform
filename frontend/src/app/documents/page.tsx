@@ -20,6 +20,11 @@ type DocumentItem = {
   parse_status: string;
   visibility: string;
   visibility_type?: string;
+  knowledge_space?: string;
+  visibility_scope?: string | null;
+  allowed_job_categories?: string | null;
+  knowledge_category?: string | null;
+  publish_status?: string;
   allowed_departments?: string | null;
   min_permission_level?: number;
   security_level?: string;
@@ -65,6 +70,25 @@ type MyAccessRequest = {
   ai_suggestion?: string | null;
   ai_risk_level?: string | null;
   ai_reason?: string | null;
+  review_comment?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string | null;
+};
+
+type PublishRequestTarget = {
+  document_id: string;
+  file_name: string;
+};
+
+type MyPublishRequest = {
+  request_id: string;
+  document_id: string;
+  document_name?: string | null;
+  target_category: string;
+  allowed_job_categories: string;
+  publish_reason: string;
+  business_purpose: string;
+  status: 'pending' | 'approved' | 'rejected';
   review_comment?: string | null;
   reviewed_at?: string | null;
   created_at?: string | null;
@@ -160,6 +184,32 @@ async function fetchMyAccessRequests() {
   return (json.data ?? []) as MyAccessRequest[];
 }
 
+async function submitPublishRequest(target: PublishRequestTarget, targetCategory: string, allowedJobCategories: string, publishReason: string, businessPurpose: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/knowledge/publish-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      document_id: target.document_id,
+      target_category: targetCategory,
+      allowed_job_categories: allowedJobCategories,
+      publish_reason: publishReason,
+      business_purpose: businessPurpose,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '提交发布申请失败');
+  }
+  return res.json();
+}
+
+async function fetchMyPublishRequests() {
+  const res = await authedFetch(`${API_BASE}/api/v1/knowledge/publish-requests/my`);
+  if (!res.ok) throw new Error('加载我的发布申请失败');
+  const json = await res.json();
+  return (json.data ?? []) as MyPublishRequest[];
+}
+
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -200,6 +250,14 @@ export default function DocumentsPage() {
   const [requestSubmitting, setRequestSubmitting] = useState(false);
   const [myRequests, setMyRequests] = useState<MyAccessRequest[]>([]);
   const [myRequestsLoading, setMyRequestsLoading] = useState(false);
+  const [publishTarget, setPublishTarget] = useState<PublishRequestTarget | null>(null);
+  const [targetCategory, setTargetCategory] = useState('');
+  const [allowedJobCategories, setAllowedJobCategories] = useState('全公司');
+  const [publishReason, setPublishReason] = useState('');
+  const [publishBusinessPurpose, setPublishBusinessPurpose] = useState('');
+  const [publishSubmitting, setPublishSubmitting] = useState(false);
+  const [myPublishRequests, setMyPublishRequests] = useState<MyPublishRequest[]>([]);
+  const [myPublishLoading, setMyPublishLoading] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -227,9 +285,21 @@ export default function DocumentsPage() {
     }
   };
 
+  const loadMyPublishRequests = async () => {
+    setMyPublishLoading(true);
+    try {
+      setMyPublishRequests(await fetchMyPublishRequests());
+    } catch (error) {
+      console.warn(error);
+    } finally {
+      setMyPublishLoading(false);
+    }
+  };
+
   useEffect(() => {
     void load();
     void loadMyRequests();
+    void loadMyPublishRequests();
   }, []);
 
   const filteredDocuments = useMemo(() => {
@@ -270,6 +340,14 @@ export default function DocumentsPage() {
     setRequestReason(target.reason || '需要查阅该文档以完成当前工作。');
     setBusinessPurpose('');
     setExpectedDuration('7天');
+  };
+
+  const openPublishDialog = (target: PublishRequestTarget) => {
+    setPublishTarget(target);
+    setTargetCategory('');
+    setAllowedJobCategories('全公司');
+    setPublishReason('该个人知识已经整理完成，希望发布到公有知识库供团队复用。');
+    setPublishBusinessPurpose('');
   };
 
   return (
@@ -439,6 +517,8 @@ export default function DocumentsPage() {
                             <span>类型：{doc.file_type}</span>
                             <span>大小：{formatSize(doc.file_size)}</span>
                             <span>可见性：{doc.visibility_type || doc.visibility}</span>
+                            <span>空间：{doc.knowledge_space || 'public'}</span>
+                            <span>发布：{doc.publish_status || 'none'}</span>
                             <span>等级：L{doc.min_permission_level ?? 1}</span>
                             <span>更新：{doc.updated_at ?? '-'}</span>
                           </div>
@@ -464,6 +544,19 @@ export default function DocumentsPage() {
                             }}
                           >
                             申请
+                          </Button>
+                        )}
+                        {canAccess && doc.knowledge_space === 'personal' && doc.publish_status !== 'pending' && doc.publish_status !== 'approved' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-1 shrink-0"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openPublishDialog({ document_id: doc.document_id, file_name: doc.file_name });
+                            }}
+                          >
+                            发布审核
                           </Button>
                         )}
                       </div>
@@ -562,6 +655,37 @@ export default function DocumentsPage() {
 
           <Card className="border-slate-200 bg-white shadow-sm">
             <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base text-slate-950"><UploadCloud size={16} /> 我的发布申请</CardTitle>
+              <CardDescription className="text-slate-700">个人知识提交到公有知识库后，需要管理员审核通过才会进入公共检索。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex justify-end">
+                <Button variant="outline" size="sm" onClick={() => void loadMyPublishRequests()} disabled={myPublishLoading}>
+                  <RefreshCw size={14} className={myPublishLoading ? 'animate-spin' : ''} /> 刷新
+                </Button>
+              </div>
+              {myPublishRequests.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-500">暂时没有发布申请。</div>
+              ) : (
+                <div className="space-y-3">
+                  {myPublishRequests.slice(0, 5).map((item) => (
+                    <div key={item.request_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="min-w-0 truncate text-sm font-medium text-slate-950">{item.document_name || item.document_id}</div>
+                        <Badge className={accessStatusClass(item.status)}>{accessStatusLabel(item.status)}</Badge>
+                      </div>
+                      <div className="mt-2 text-xs text-slate-600">类别：{item.target_category} · 可访问：{item.allowed_job_categories}</div>
+                      <div className="mt-2 text-sm leading-6 text-slate-700">用途：{item.business_purpose}</div>
+                      {item.review_comment && <div className="mt-2 rounded-lg bg-white p-3 text-sm text-slate-700">审核意见：{item.review_comment}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-slate-200 bg-white shadow-sm">
+            <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base text-slate-950"><FileUp size={16} /> 文档摘要</CardTitle>
               <CardDescription className="text-slate-700">快速查看当前选中文档的信息。</CardDescription>
             </CardHeader>
@@ -580,6 +704,8 @@ export default function DocumentsPage() {
                     <div className="rounded-xl bg-slate-50 p-3">状态：{selectedDocument.parse_status}</div>
                     <div className="rounded-xl bg-slate-50 p-3">大小：{formatSize(selectedDocument.file_size)}</div>
                     <div className="rounded-xl bg-slate-50 p-3">权限：{isAccessible(selectedDocument) ? '可阅读' : '需申请'}</div>
+                    <div className="rounded-xl bg-slate-50 p-3">空间：{selectedDocument.knowledge_space || 'public'}</div>
+                    <div className="rounded-xl bg-slate-50 p-3">发布：{selectedDocument.publish_status || 'none'}</div>
                   </div>
                   {!isAccessible(selectedDocument) && (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
@@ -594,6 +720,11 @@ export default function DocumentsPage() {
                     ) : (
                       <Button className="w-full" variant="outline" onClick={() => openRequestDialog({ document_id: selectedDocument.document_id, file_name: selectedDocument.file_name, reason: selectedDocument.access_reason })}>
                         申请访问 <Send size={14} />
+                      </Button>
+                    )}
+                    {isAccessible(selectedDocument) && selectedDocument.knowledge_space === 'personal' && selectedDocument.publish_status !== 'pending' && selectedDocument.publish_status !== 'approved' && (
+                      <Button className="w-full" variant="outline" onClick={() => openPublishDialog({ document_id: selectedDocument.document_id, file_name: selectedDocument.file_name })}>
+                        提交公有审核 <Send size={14} />
                       </Button>
                     )}
                     <Button
@@ -670,6 +801,61 @@ export default function DocumentsPage() {
                   }}
                 >
                   {requestSubmitting ? '提交中...' : '提交申请'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {publishTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+          <div className="w-full max-w-xl rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold text-slate-950">提交到公有知识库</div>
+                <div className="mt-1 text-sm text-slate-600">{publishTarget.file_name}</div>
+              </div>
+              <Button variant="ghost" onClick={() => setPublishTarget(null)}>关闭</Button>
+            </div>
+            <div className="mt-5 space-y-4">
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">希望划分的知识类别</div>
+                <Input value={targetCategory} onChange={(event) => setTargetCategory(event.target.value)} placeholder="例如：IT流程、制度规范、研发知识" />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">可访问人员工作类别</div>
+                <Input value={allowedJobCategories} onChange={(event) => setAllowedJobCategories(event.target.value)} placeholder="例如：全公司、研发工程师、信息技术部" />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">发布理由</div>
+                <Textarea value={publishReason} onChange={(event) => setPublishReason(event.target.value)} className="bg-white text-slate-900 placeholder:text-slate-400" />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">业务用途</div>
+                <Textarea value={publishBusinessPurpose} onChange={(event) => setPublishBusinessPurpose(event.target.value)} placeholder="说明这份知识发布后能服务哪些业务场景" className="bg-white text-slate-900 placeholder:text-slate-400" />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setPublishTarget(null)}>取消</Button>
+                <Button
+                  disabled={publishSubmitting || !targetCategory.trim() || !allowedJobCategories.trim() || !publishReason.trim() || !publishBusinessPurpose.trim()}
+                  onClick={async () => {
+                    if (!publishTarget) return;
+                    try {
+                      setPublishSubmitting(true);
+                      await submitPublishRequest(publishTarget, targetCategory.trim(), allowedJobCategories.trim(), publishReason.trim(), publishBusinessPurpose.trim());
+                      await load();
+                      await loadMyPublishRequests();
+                      alert('发布申请已提交，等待管理员审核。');
+                      setPublishTarget(null);
+                    } catch (error) {
+                      alert(error instanceof Error ? error.message : '提交发布申请失败');
+                    } finally {
+                      setPublishSubmitting(false);
+                    }
+                  }}
+                >
+                  {publishSubmitting ? '提交中...' : '提交发布申请'}
                 </Button>
               </div>
             </div>

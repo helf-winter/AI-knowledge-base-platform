@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, Bot, CheckCircle2, FileText, ListChecks, PencilLine, PlusCircle, RefreshCw, ShieldCheck, XCircle } from 'lucide-react';
+import { ArrowRight, Bot, CheckCircle2, FileText, ListChecks, PencilLine, PlusCircle, RefreshCw, ShieldCheck, UploadCloud, XCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -49,6 +49,24 @@ type KnowledgeMetadata = {
   updated_at?: string | null;
 };
 
+type PublishRequest = {
+  request_id: string;
+  document_id: string;
+  requester_id: string;
+  requester_name?: string | null;
+  requester_employee_no?: string | null;
+  document_name?: string | null;
+  target_category: string;
+  allowed_job_categories: string;
+  publish_reason: string;
+  business_purpose: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewed_by?: string | null;
+  review_comment?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string | null;
+};
+
 function getToken() {
   return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
 }
@@ -87,6 +105,28 @@ async function reviewAccessRequest(requestId: string, approve: boolean, reviewCo
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '提交审核结果失败');
+  }
+  return res.json();
+}
+
+async function fetchPublishRequests(status: string) {
+  const url = new URL(`${API_BASE}/api/v1/admin/publish-requests`);
+  if (status) url.searchParams.set('status', status);
+  const res = await authedFetch(url.toString());
+  if (!res.ok) throw new Error(res.status === 403 ? '当前账号无权访问发布审核' : '加载发布申请失败');
+  const json = await res.json();
+  return (json.data ?? []) as PublishRequest[];
+}
+
+async function reviewPublishRequest(requestId: string, approve: boolean, reviewComment: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/publish-requests/${requestId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approve, review_comment: reviewComment || null }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '提交发布审核失败');
   }
   return res.json();
 }
@@ -180,6 +220,12 @@ export default function AdminPage() {
   const [aiLoadingId, setAiLoadingId] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [reviewComment, setReviewComment] = useState('');
+  const [publishRequests, setPublishRequests] = useState<PublishRequest[]>([]);
+  const [publishStatus, setPublishStatus] = useState('pending');
+  const [selectedPublishId, setSelectedPublishId] = useState<string | null>(null);
+  const [publishLoading, setPublishLoading] = useState(false);
+  const [publishReviewingId, setPublishReviewingId] = useState<string | null>(null);
+  const [publishReviewComment, setPublishReviewComment] = useState('');
 
   const [items, setItems] = useState<KnowledgeMetadata[]>([]);
   const [loading, setLoading] = useState(false);
@@ -189,6 +235,7 @@ export default function AdminPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const selectedRequest = useMemo(() => requests.find((item) => item.request_id === selectedRequestId) ?? requests[0] ?? null, [requests, selectedRequestId]);
+  const selectedPublishRequest = useMemo(() => publishRequests.find((item) => item.request_id === selectedPublishId) ?? publishRequests[0] ?? null, [publishRequests, selectedPublishId]);
   const filtered = useMemo(() => items.filter((item) => !filter || item.status === filter), [items, filter]);
 
   const loadRequests = async () => {
@@ -215,7 +262,21 @@ export default function AdminPage() {
     }
   };
 
+  const loadPublishRequests = async () => {
+    setPublishLoading(true);
+    try {
+      const data = await fetchPublishRequests(publishStatus);
+      setPublishRequests(data);
+      setSelectedPublishId(data[0]?.request_id ?? null);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '加载发布申请失败');
+    } finally {
+      setPublishLoading(false);
+    }
+  };
+
   useEffect(() => { void loadRequests(); }, [requestStatus]);
+  useEffect(() => { void loadPublishRequests(); }, [publishStatus]);
   useEffect(() => { void loadMetadata(); }, [filter, documentFilter]);
 
   return (
@@ -381,6 +442,134 @@ export default function AdminPage() {
               </>
             ) : (
               <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">请选择左侧申请查看详情。</div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100 pb-4">
+            <CardTitle className="flex items-center gap-2 text-base text-slate-900"><UploadCloud size={16} /> 公有知识发布审核</CardTitle>
+            <CardDescription className="text-slate-700">个人知识只有审核通过后才会转入公有知识库，并进入公共检索范围。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            <div className="flex flex-wrap gap-2">
+              {['pending', 'approved', 'rejected'].map((item) => (
+                <Button key={item} size="sm" variant={publishStatus === item ? 'default' : 'outline'} onClick={() => setPublishStatus(item)}>
+                  {statusLabel(item)}
+                </Button>
+              ))}
+              <Button variant="outline" size="sm" onClick={() => void loadPublishRequests()} disabled={publishLoading}>
+                <RefreshCw size={14} className={publishLoading ? 'animate-spin' : ''} /> 刷新
+              </Button>
+            </div>
+            {publishRequests.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">当前状态下暂无发布申请。</div>
+            ) : (
+              <div className="space-y-3">
+                {publishRequests.map((item) => (
+                  <button
+                    key={item.request_id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedPublishId(item.request_id);
+                      setPublishReviewComment(item.review_comment || '');
+                    }}
+                    className={`w-full rounded-xl border p-4 text-left transition ${selectedPublishRequest?.request_id === item.request_id ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'}`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-slate-950">{item.document_name || item.document_id}</div>
+                        <div className="mt-1 text-xs text-slate-600">{item.requester_name || item.requester_id} · {item.requester_employee_no || '-'}</div>
+                      </div>
+                      <Badge className="bg-white text-slate-700 hover:bg-white">{statusLabel(item.status)}</Badge>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
+                      <span>类别：{item.target_category}</span>
+                      <span>可访问：{item.allowed_job_categories}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100 pb-4">
+            <CardTitle className="flex items-center gap-2 text-base text-slate-900"><FileText size={16} /> 发布详情</CardTitle>
+            <CardDescription className="text-slate-700">审核通过会把知识空间从 personal 转为 public。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            {selectedPublishRequest ? (
+              <>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">申请人：{selectedPublishRequest.requester_name || '-'}（{selectedPublishRequest.requester_employee_no || '-'}）</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">状态：{statusLabel(selectedPublishRequest.status)}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700 md:col-span-2">文档：{selectedPublishRequest.document_name || selectedPublishRequest.document_id}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">目标类别：{selectedPublishRequest.target_category}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">可访问人员：{selectedPublishRequest.allowed_job_categories}</div>
+                </div>
+                <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+                  <div>
+                    <div className="text-xs font-medium text-slate-500">发布理由</div>
+                    <p className="mt-1 text-sm leading-7 text-slate-900">{selectedPublishRequest.publish_reason}</p>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-slate-500">业务用途</div>
+                    <p className="mt-1 text-sm leading-7 text-slate-900">{selectedPublishRequest.business_purpose}</p>
+                  </div>
+                </div>
+                <Textarea value={publishReviewComment} onChange={(event) => setPublishReviewComment(event.target.value)} placeholder="填写发布审核意见" className="bg-white text-slate-900 placeholder:text-slate-400" />
+                <div className="flex flex-wrap gap-2">
+                  <Button asChild variant="outline">
+                    <Link href={`/documents/${selectedPublishRequest.document_id}`}>
+                      <ArrowRight size={14} /> 查看文档
+                    </Link>
+                  </Button>
+                  <Button
+                    disabled={selectedPublishRequest.status !== 'pending' || publishReviewingId === selectedPublishRequest.request_id}
+                    onClick={async () => {
+                      try {
+                        setPublishReviewingId(selectedPublishRequest.request_id);
+                        await reviewPublishRequest(selectedPublishRequest.request_id, true, publishReviewComment);
+                        await loadPublishRequests();
+                      } catch (error) {
+                        alert(error instanceof Error ? error.message : '发布通过失败');
+                      } finally {
+                        setPublishReviewingId(null);
+                      }
+                    }}
+                  >
+                    <CheckCircle2 size={14} /> 通过发布
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    disabled={selectedPublishRequest.status !== 'pending' || publishReviewingId === selectedPublishRequest.request_id}
+                    onClick={async () => {
+                      try {
+                        setPublishReviewingId(selectedPublishRequest.request_id);
+                        await reviewPublishRequest(selectedPublishRequest.request_id, false, publishReviewComment);
+                        await loadPublishRequests();
+                      } catch (error) {
+                        alert(error instanceof Error ? error.message : '发布拒绝失败');
+                      } finally {
+                        setPublishReviewingId(null);
+                      }
+                    }}
+                  >
+                    <XCircle size={14} /> 拒绝发布
+                  </Button>
+                </div>
+                {selectedPublishRequest.status !== 'pending' && (
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+                    已审核：{selectedPublishRequest.reviewed_at || '-'}；意见：{selectedPublishRequest.review_comment || '-'}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">请选择左侧发布申请查看详情。</div>
             )}
           </CardContent>
         </Card>

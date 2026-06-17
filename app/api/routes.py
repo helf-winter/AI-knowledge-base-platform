@@ -23,7 +23,7 @@ from app.schemas.common import APIResponse
 from app.schemas.conversation import ConversationTurnCreate, ConversationTurnRead
 from app.schemas.evaluation import EvaluationCaseCreate, EvaluationCaseRead, EvaluationRunCreate, EvaluationRunRead, EvaluationResultRead
 from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead
-from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, SearchRequest, SearchResponse
+from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, SearchRequest, SearchResponse
 from app.schemas.observability import AlertEventRead, AlertRuleCreate, AlertRuleRead, MetricSnapshotCreate
 from app.schemas.task import TaskRead
 from app.services.audit import AuditService
@@ -34,6 +34,7 @@ from app.services.conversation import ConversationService
 from app.services.evaluation import EvaluationService
 from app.services.flywheel import KnowledgeFlywheelService
 from app.services.knowledge_admin import KnowledgeAdminService
+from app.services.knowledge_publish import KnowledgePublishService
 from app.services.knowledge_service import KnowledgeService
 from app.services.observability import ObservabilityService
 from app.services.parsers import validate_upload_file
@@ -109,6 +110,11 @@ def _document_item_response(document, decision: AccessDecision) -> DocumentItem:
         parse_status=document.parse_status,
         visibility=document.visibility,
         visibility_type=document.visibility_type,
+        knowledge_space=document.knowledge_space,
+        visibility_scope=document.visibility_scope,
+        allowed_job_categories=document.allowed_job_categories,
+        knowledge_category=document.knowledge_category,
+        publish_status=document.publish_status,
         allowed_departments=document.allowed_departments,
         min_permission_level=document.min_permission_level,
         security_level=document.security_level,
@@ -163,6 +169,29 @@ def _access_request_response(item, access: DocumentAccessService | None = None) 
         ai_suggestion=item.ai_suggestion,
         ai_risk_level=item.ai_risk_level,
         ai_reason=item.ai_reason,
+        reviewed_by=item.reviewed_by,
+        review_comment=item.review_comment,
+        reviewed_at=item.reviewed_at.isoformat() if item.reviewed_at else None,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+    )
+
+
+def _publish_request_response(item, service: KnowledgePublishService | None = None) -> KnowledgePublishRequestRead:
+    context = service.get_context(item) if service is not None else {}
+    requester = context.get("requester") if context else None
+    document = context.get("document") if context else None
+    return KnowledgePublishRequestRead(
+        request_id=item.request_id,
+        document_id=item.document_id,
+        requester_id=item.requester_id,
+        requester_name=getattr(requester, "display_name", None),
+        requester_employee_no=getattr(requester, "employee_no", None),
+        document_name=getattr(document, "file_name", None),
+        target_category=item.target_category,
+        allowed_job_categories=item.allowed_job_categories,
+        publish_reason=item.publish_reason,
+        business_purpose=item.business_purpose,
+        status=item.status,
         reviewed_by=item.reviewed_by,
         review_comment=item.review_comment,
         reviewed_at=item.reviewed_at.isoformat() if item.reviewed_at else None,
@@ -299,7 +328,7 @@ def verify_password(payload: VerifyPasswordRequest, db: Session = Depends(get_db
 
 
 @router.post("/documents/upload", response_model=APIResponse[DocumentCreateResponse])
-async def upload_document(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), user=Depends(require_roles("admin"))):
+async def upload_document(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), user=Depends(get_current_user)):
     try:
         validate_upload_file(file)
         content = await file.read()
@@ -314,7 +343,12 @@ async def upload_document(request: Request, file: UploadFile = File(...), db: Se
 def list_documents(limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0), db: Session = Depends(get_db), user=Depends(get_current_user)):
     items = KnowledgeService(db).list_documents(limit=limit, offset=offset)
     access = DocumentAccessService(db)
-    return APIResponse(data=[_document_item_response(item, access.can_access_document(item, user)) for item in items])
+    visible = []
+    for item in items:
+        decision = access.can_access_document(item, user)
+        if decision.can_access:
+            visible.append(_document_item_response(item, decision))
+    return APIResponse(data=visible)
 
 
 @router.get("/documents/{document_id}/raw")
@@ -361,6 +395,11 @@ def get_document(document_id: str, db: Session = Depends(get_db), user=Depends(g
             parse_status=document.parse_status,
             visibility=document.visibility,
             visibility_type=document.visibility_type,
+            knowledge_space=document.knowledge_space,
+            visibility_scope=document.visibility_scope,
+            allowed_job_categories=document.allowed_job_categories,
+            knowledge_category=document.knowledge_category,
+            publish_status=document.publish_status,
             allowed_departments=document.allowed_departments,
             min_permission_level=document.min_permission_level,
             security_level=document.security_level,
@@ -463,6 +502,56 @@ def list_my_access_requests(db: Session = Depends(get_db), user=Depends(get_curr
     access = DocumentAccessService(db)
     items = access.list_my_requests(user)
     return APIResponse(data=[_access_request_response(item, access) for item in items])
+
+
+@router.post("/knowledge/publish-requests", response_model=APIResponse[KnowledgePublishRequestRead])
+def create_publish_request(payload: KnowledgePublishRequestCreate, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    try:
+        service = KnowledgePublishService(db)
+        item = service.create_request(payload, user)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="request_publish_knowledge",
+            resource_type="document",
+            resource_id=item.document_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"request_id": item.request_id, "status": item.status},
+        )
+        return APIResponse(data=_publish_request_response(item, service))
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
+@router.get("/knowledge/publish-requests/my", response_model=APIResponse[list[KnowledgePublishRequestRead]])
+def list_my_publish_requests(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    service = KnowledgePublishService(db)
+    items = service.list_my_requests(user)
+    return APIResponse(data=[_publish_request_response(item, service) for item in items])
+
+
+@router.get("/admin/publish-requests", response_model=APIResponse[list[KnowledgePublishRequestRead]])
+def list_admin_publish_requests(status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"), db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
+    service = KnowledgePublishService(db)
+    items = service.list_requests(status=status)
+    return APIResponse(data=[_publish_request_response(item, service) for item in items])
+
+
+@router.post("/admin/publish-requests/{request_id}/review", response_model=APIResponse[KnowledgePublishRequestRead])
+def review_publish_request(request_id: str, payload: KnowledgePublishReviewRequest, request: Request, db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
+    try:
+        service = KnowledgePublishService(db)
+        item = service.review_request(request_id=request_id, approve=payload.approve, reviewer=user, review_comment=payload.review_comment)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="approve_publish_request" if payload.approve else "reject_publish_request",
+            resource_type="publish_request",
+            resource_id=request_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"status": item.status, "document_id": item.document_id},
+        )
+        return APIResponse(data=_publish_request_response(item, service))
+    except Exception as exc:
+        _handle_app_error(exc)
 
 
 @router.get("/admin/access-requests", response_model=APIResponse[list[AccessRequestRead]])

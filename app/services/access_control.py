@@ -40,14 +40,32 @@ class DocumentAccessService:
         if document.owner_user_id and document.owner_user_id == user.user_id:
             return AccessDecision(True, "文档创建者可访问")
 
+        knowledge_space = (document.knowledge_space or "public").lower()
+        if knowledge_space == "personal":
+            return AccessDecision(False, "个人知识仅创建者可访问", False)
+
+        if knowledge_space == "department":
+            allowed_departments = self._parse_list(document.allowed_departments)
+            if allowed_departments and (user.department or "") not in allowed_departments:
+                return AccessDecision(False, "部门知识仅指定部门可访问", False)
+
+        if knowledge_space == "public":
+            allowed_jobs = self._parse_list(document.allowed_job_categories)
+            if allowed_jobs and not self._matches_job_category(allowed_jobs, user):
+                return AccessDecision(False, "该公有知识仅对指定工作类别开放", False)
+            return AccessDecision(True, "公开知识可访问")
+
         visibility_type = (document.visibility_type or document.visibility or "private").lower()
         if document.is_public or visibility_type == "public":
-            return AccessDecision(True, "公开文档可访问")
+            allowed_jobs = self._parse_list(document.allowed_job_categories)
+            if allowed_jobs and not self._matches_job_category(allowed_jobs, user):
+                return AccessDecision(False, "该公有知识仅对指定工作类别开放", False)
+            return AccessDecision(True, "公开知识可访问")
 
         if self._has_valid_grant(document.document_id, user.user_id):
             return AccessDecision(True, "已获得访问授权")
 
-        allowed_departments = self._parse_departments(document.allowed_departments)
+        allowed_departments = self._parse_list(document.allowed_departments)
         if allowed_departments and (user.department or "") not in allowed_departments:
             return AccessDecision(False, "该文档仅对指定部门开放，需要申请访问", True)
 
@@ -75,6 +93,8 @@ class DocumentAccessService:
 
     def create_access_request(self, payload: AccessRequestCreate, user: AuthenticatedUser) -> AccessRequest:
         document, decision = self.check_document_access(payload.document_id, user)
+        if document.knowledge_space == "personal" and document.owner_user_id != user.user_id:
+            raise PermissionAppError("个人知识不能申请访问")
         if decision.can_access:
             raise ValidationAppError("你已经可以访问该文档，无需重复申请")
         if not decision.need_apply:
@@ -125,11 +145,7 @@ class DocumentAccessService:
         document = self.db.get(Document, request.document_id)
         applicant = self.db.get(User, request.user_id)
         if document is None or applicant is None:
-            suggestion = {
-                "suggestion": "reject",
-                "risk_level": "high",
-                "reason": "申请关联的用户或文档不存在，无法完成权限核验。",
-            }
+            suggestion = {"suggestion": "reject", "risk_level": "high", "reason": "申请关联的用户或文档不存在，无法完成权限核验。"}
         else:
             suggestion = self._ask_deepseek_for_review(request, applicant, document) or self._fallback_ai_review(request, applicant, document)
 
@@ -169,11 +185,7 @@ class DocumentAccessService:
         applicant = self.db.get(User, request.user_id)
         department = self.db.get(Department, applicant.department_id) if applicant and applicant.department_id else None
         document = self.db.get(Document, request.document_id)
-        return {
-            "applicant": applicant,
-            "department": department,
-            "document": document,
-        }
+        return {"applicant": applicant, "department": department, "document": document}
 
     def _has_valid_grant(self, document_id: str, user_id: str) -> bool:
         now = datetime.now(timezone.utc)
@@ -210,7 +222,6 @@ class DocumentAccessService:
     def _ask_deepseek_for_review(self, request: AccessRequest, applicant: User, document: Document) -> dict[str, str] | None:
         if not settings.deepseek_api_key:
             return None
-
         department = self.db.get(Department, applicant.department_id) if applicant.department_id else None
         prompt = {
             "task": "企业知识库文档访问申请辅助审核。你只提供建议，不能自动审批。",
@@ -223,10 +234,12 @@ class DocumentAccessService:
             },
             "document": {
                 "file_name": document.file_name,
+                "knowledge_space": document.knowledge_space,
                 "visibility_type": document.visibility_type,
                 "security_level": document.security_level,
                 "min_permission_level": document.min_permission_level,
                 "allowed_departments": document.allowed_departments,
+                "allowed_job_categories": document.allowed_job_categories,
             },
             "request": {
                 "reason": request.reason,
@@ -237,10 +250,7 @@ class DocumentAccessService:
         payload = {
             "model": settings.deepseek_model,
             "messages": [
-                {
-                    "role": "system",
-                    "content": "你是企业知识访问风控助手。只输出 JSON，不要输出 Markdown。AI 只能辅助建议，最终由管理员人工审批。",
-                },
+                {"role": "system", "content": "你是企业知识访问风控助手。只输出 JSON，不要输出 Markdown。AI 只能辅助建议，最终由管理员人工审批。"},
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
             "stream": False,
@@ -297,10 +307,10 @@ class DocumentAccessService:
         if security_level in {"secret", "confidential", "restricted"}:
             if suggestion != "reject":
                 suggestion = "review"
-            risk_level = "high" if risk_level != "high" else risk_level
+            risk_level = "high"
             reason_parts.append("文档安全等级较高，建议管理员重点核验必要性和使用范围。")
 
-        allowed_departments = self._parse_departments(document.allowed_departments)
+        allowed_departments = self._parse_list(document.allowed_departments)
         department = self.db.get(Department, applicant.department_id) if applicant.department_id else None
         if allowed_departments and (department.department_name if department else "") not in allowed_departments:
             if suggestion != "reject":
@@ -321,7 +331,7 @@ class DocumentAccessService:
         value = (value or "").lower().strip()
         return value if value in {"low", "medium", "high"} else "medium"
 
-    def _parse_departments(self, raw: str | None) -> set[str]:
+    def _parse_list(self, raw: str | None) -> set[str]:
         if not raw:
             return set()
         text = raw.strip()
@@ -334,3 +344,15 @@ class DocumentAccessService:
         except Exception:
             pass
         return {item.strip() for item in text.replace("；", ",").replace(";", ",").split(",") if item.strip()}
+
+    def _matches_job_category(self, allowed_jobs: set[str], user: AuthenticatedUser) -> bool:
+        normalized = {item.lower() for item in allowed_jobs}
+        if normalized.intersection({"all", "company", "public", "全公司", "全部", "所有人"}):
+            return True
+        candidates = {
+            (user.department or "").lower(),
+            (user.position or "").lower(),
+            (user.employee_no or "").lower(),
+        }
+        candidates.update(role.lower() for role in user.roles)
+        return bool(normalized.intersection(candidates))

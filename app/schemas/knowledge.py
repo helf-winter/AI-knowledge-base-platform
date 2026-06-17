@@ -17,6 +17,11 @@ class DocumentItem(BaseModel):
     parse_status: str
     visibility: str
     visibility_type: str = "private"
+    knowledge_space: str = "personal"
+    visibility_scope: str | None = None
+    allowed_job_categories: str | None = None
+    knowledge_category: str | None = None
+    publish_status: str = "none"
     allowed_departments: str | None = None
     min_permission_level: int = 1
     security_level: str = "internal"
@@ -53,6 +58,11 @@ class DocumentDetail(BaseModel):
     parse_status: str
     visibility: str
     visibility_type: str = "private"
+    knowledge_space: str = "personal"
+    visibility_scope: str | None = None
+    allowed_job_categories: str | None = None
+    knowledge_category: str | None = None
+    publish_status: str = "none"
     allowed_departments: str | None = None
     min_permission_level: int = 1
     security_level: str = "internal"
@@ -169,3 +179,34 @@ class AIAccessReviewResponse(BaseModel):
     suggestion: str
     risk_level: str
     reason: str
+
+
+class KnowledgePublishRequestCreate(BaseModel):
+    document_id: str = Field(min_length=1, max_length=36)
+    target_category: str = Field(min_length=1, max_length=128)
+    allowed_job_categories: str = Field(min_length=1, max_length=1000)
+    publish_reason: str = Field(min_length=1, max_length=1000)
+    business_purpose: str = Field(min_length=1, max_length=1000)
+
+
+class KnowledgePublishRequestRead(BaseModel):
+    request_id: str
+    document_id: str
+    requester_id: str
+    requester_name: str | None = None
+    requester_employee_no: str | None = None
+    document_name: str | None = None
+    target_category: str
+    allowed_job_categories: str
+    publish_reason: str
+    business_purpose: str
+    status: str
+    reviewed_by: str | None = None
+    review_comment: str | None = None
+    reviewed_at: str | None = None
+    created_at: str | None = None
+
+
+class KnowledgePublishReviewRequest(BaseModel):
+    approve: bool
+    review_comment: str | None = Field(default=None, max_length=1000)

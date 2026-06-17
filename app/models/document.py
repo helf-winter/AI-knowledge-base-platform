@@ -20,6 +20,11 @@ class Document(Base):
     parse_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     visibility: Mapped[str] = mapped_column(String(32), default="private")
     visibility_type: Mapped[str] = mapped_column(String(32), default="private", server_default="private")
+    knowledge_space: Mapped[str] = mapped_column(String(32), nullable=False, default="personal", server_default="personal")
+    visibility_scope: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    allowed_job_categories: Mapped[str | None] = mapped_column(Text, nullable=True)
+    knowledge_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    publish_status: Mapped[str] = mapped_column(String(32), nullable=False, default="none", server_default="none")
     allowed_departments: Mapped[str | None] = mapped_column(Text, nullable=True)
     min_permission_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     security_level: Mapped[str] = mapped_column(String(32), nullable=False, default="internal", server_default="internal")
@@ -89,6 +94,23 @@ class AccessRequest(Base):
     ai_suggestion: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ai_risk_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ai_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgePublishRequest(Base):
+    __tablename__ = "knowledge_publish_requests"
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.document_id", ondelete="CASCADE"), index=True, nullable=False)
+    requester_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    target_category: Mapped[str] = mapped_column(String(128), nullable=False)
+    allowed_job_categories: Mapped[str] = mapped_column(Text, nullable=False)
+    publish_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    business_purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
     reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

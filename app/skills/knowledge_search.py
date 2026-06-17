@@ -36,6 +36,8 @@ class KnowledgeSearchSkill:
         for hit in hits:
             decision = access.can_access_document(hit.chunk.document, user) if user else None
             can_access = decision.can_access if decision else True
+            if not can_access:
+                continue
             if len(results) >= top_k:
                 break
             results.append(
