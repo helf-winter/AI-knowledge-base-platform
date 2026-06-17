@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { RefreshCw, FileSearch, Filter, Sparkles, ArrowRight, ShieldCheck, MessageSquareText, FileUp } from 'lucide-react';
+import { actionLabel, resourceTypeLabel } from '@/lib/display-labels';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -55,7 +56,7 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 function getActionLabel(action: string) {
-  return ACTION_LABELS[action] ?? action;
+  return ACTION_LABELS[action] ?? actionLabel(action);
 }
 
 export default function AuditPage() {
@@ -91,8 +92,8 @@ export default function AuditPage() {
   }, [traceId]);
 
   const filteredLogs = logs.filter((log) => {
-    const actionOk = !actionFilter || log.action.includes(actionFilter);
-    const resourceOk = !resourceFilter || log.resource_type.includes(resourceFilter);
+    const actionOk = !actionFilter || log.action.includes(actionFilter) || getActionLabel(log.action).includes(actionFilter);
+    const resourceOk = !resourceFilter || log.resource_type.includes(resourceFilter) || resourceTypeLabel(log.resource_type).includes(resourceFilter);
     return actionOk && resourceOk;
   });
 
@@ -166,9 +167,9 @@ export default function AuditPage() {
                   <div>
                     <div className="flex items-center gap-2 text-sm font-medium text-[color:var(--text)]">
                       <span>{getActionLabel(log.action)}</span>
-                      <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{log.resource_type}</Badge>
+                      <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{resourceTypeLabel(log.resource_type)}</Badge>
                     </div>
-                    <div className="mt-1 text-xs text-[color:var(--muted)]">{log.resource_type} / {log.resource_id || '-'}</div>
+                    <div className="mt-1 text-xs text-[color:var(--muted)]">{resourceTypeLabel(log.resource_type)} / {log.resource_id || '-'}</div>
                   </div>
                   <Badge className="bg-slate-100 text-slate-900 hover:bg-slate-100">{log.user_id || 'system'}</Badge>
                 </div>
@@ -176,7 +177,7 @@ export default function AuditPage() {
                 <div className="grid gap-2 text-sm text-[color:var(--muted)] md:grid-cols-3">
                   <div>Trace：{log.trace_id}</div>
                   <div>时间：{log.created_at ?? '-'}</div>
-                  <div>资源：{log.resource_type}</div>
+                  <div>资源：{resourceTypeLabel(log.resource_type)}</div>
                 </div>
 
                 <div className="rounded-2xl border border-[color:var(--border)] bg-black/20 p-4 text-xs leading-6 text-[color:var(--text)] break-all">

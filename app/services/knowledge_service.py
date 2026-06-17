@@ -14,7 +14,7 @@ from app.core.exceptions import ValidationAppError
 from app.core.skills import SkillRegistry
 from app.models.conversation import ConversationTurn
 from app.models.core import KnowledgeMetadata, TaskRecord
-from app.models.document import Document, DocumentChunk, Feedback
+from app.models.document import Document, DocumentChunk, Feedback, PublicKnowledgeRef
 from app.models.vector import ChunkEmbedding
 from app.schemas.flywheel import KnowledgeGapCreate
 from app.services.conversation import ConversationService
@@ -293,6 +293,8 @@ class KnowledgeService:
                 title = document.file_name
 
         chunk = self._append_chunk(document, content)
+        if action == "append":
+            self._mark_public_refs_need_review(document)
         if document.content_text:
             if content not in document.content_text:
                 document.content_text = f"{document.content_text.rstrip()}\n\n{content}"
@@ -336,6 +338,19 @@ class KnowledgeService:
             "action": action,
             "title": metadata.title,
         }
+
+    def _mark_public_refs_need_review(self, document: Document) -> None:
+        refs = self.db.execute(
+            select(PublicKnowledgeRef).where(
+                PublicKnowledgeRef.document_id == document.document_id,
+                PublicKnowledgeRef.status == "active",
+            )
+        ).scalars().all()
+        if not refs:
+            return
+        for ref in refs:
+            ref.status = "needs_review"
+        document.publish_status = "pending"
 
     def _build_expansion_content(self, query: str, answer: str) -> str:
         return (

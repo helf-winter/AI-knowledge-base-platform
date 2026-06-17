@@ -131,10 +131,10 @@ export default function ConversationsPage() {
                 </div>
 
                 <div className="grid gap-2 text-sm text-slate-600 md:grid-cols-4">
-                  <div>Confidence: {item.confidence.toFixed(3)}</div>
+                  <div>置信度：{item.confidence.toFixed(3)}</div>
                   <div>Prompt: {item.prompt_version}</div>
                   <div>Trace: {item.trace_id || '-'}</div>
-                  <div>User: {item.user_id || '-'}</div>
+                  <div>用户：{item.user_id || '-'}</div>
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-900">
@@ -142,7 +142,7 @@ export default function ConversationsPage() {
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600 break-all">
-                  Refs: {item.source_refs_json}
+                  来源依据：{item.source_refs_json}
                 </div>
               </CardContent>
             </Card>

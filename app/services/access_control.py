@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.exceptions import NotFoundAppError, PermissionAppError, ValidationAppError
 from app.models.core import Department, User
-from app.models.document import AccessRequest, Document, DocumentAccessGrant
+from app.models.document import AccessRequest, Document, DocumentAccessGrant, PublicKnowledgeRef
 from app.schemas.knowledge import AccessRequestCreate
 from app.services.auth import AuthenticatedUser
 
@@ -24,6 +24,10 @@ class AccessDecision:
     can_access: bool
     reason: str
     need_apply: bool = False
+    public_ref_id: str | None = None
+    effective_knowledge_space: str | None = None
+    public_ref_status: str | None = None
+    public_ref_category: str | None = None
 
 
 class DocumentAccessService:
@@ -31,11 +35,22 @@ class DocumentAccessService:
         self.db = db
 
     def can_access_document(self, document: Document, user: AuthenticatedUser) -> AccessDecision:
-        if "admin" in user.roles:
-            return AccessDecision(True, "管理员可访问")
-
         if document.document_status != "active":
             return AccessDecision(False, "文档当前不可用", False)
+
+        public_ref = self._active_public_ref(document)
+        if public_ref is not None and self._matches_job_category(self._parse_list(public_ref.allowed_job_categories), user):
+            return AccessDecision(
+                True,
+                "公有知识引用可访问",
+                public_ref_id=public_ref.ref_id,
+                effective_knowledge_space="public",
+                public_ref_status=public_ref.status,
+                public_ref_category=public_ref.target_category,
+            )
+
+        if "admin" in user.roles:
+            return AccessDecision(True, "管理员可访问")
 
         if document.owner_user_id and document.owner_user_id == user.user_id:
             return AccessDecision(True, "文档创建者可访问")
@@ -218,6 +233,16 @@ class DocumentAccessService:
         )
         self.db.add(grant)
         return grant
+
+    def _active_public_ref(self, document: Document) -> PublicKnowledgeRef | None:
+        return self.db.execute(
+            select(PublicKnowledgeRef)
+            .where(
+                PublicKnowledgeRef.document_id == document.document_id,
+                PublicKnowledgeRef.status == "active",
+            )
+            .order_by(PublicKnowledgeRef.created_at.desc())
+        ).scalars().first()
 
     def _ask_deepseek_for_review(self, request: AccessRequest, applicant: User, document: Document) -> dict[str, str] | None:
         if not settings.deepseek_api_key:

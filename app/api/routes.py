@@ -23,7 +23,7 @@ from app.schemas.common import APIResponse
 from app.schemas.conversation import ConversationTurnCreate, ConversationTurnRead
 from app.schemas.evaluation import EvaluationCaseCreate, EvaluationCaseRead, EvaluationRunCreate, EvaluationRunRead, EvaluationResultRead
 from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead
-from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, SearchRequest, SearchResponse
+from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, PublicKnowledgeRefRead, SearchRequest, SearchResponse
 from app.schemas.observability import AlertEventRead, AlertRuleCreate, AlertRuleRead, MetricSnapshotCreate
 from app.schemas.task import TaskRead
 from app.services.audit import AuditService
@@ -105,6 +105,10 @@ def _document_item_response(document, decision: AccessDecision) -> DocumentItem:
     return DocumentItem(
         document_id=document.document_id,
         owner_user_id=document.owner_user_id,
+        effective_knowledge_space=decision.effective_knowledge_space or document.knowledge_space,
+        public_ref_id=decision.public_ref_id,
+        public_ref_status=decision.public_ref_status,
+        public_ref_category=decision.public_ref_category,
         file_name=document.file_name,
         file_type=document.file_type,
         file_size=document.file_size,
@@ -197,6 +201,26 @@ def _publish_request_response(item, service: KnowledgePublishService | None = No
         review_comment=item.review_comment,
         reviewed_at=item.reviewed_at.isoformat() if item.reviewed_at else None,
         created_at=item.created_at.isoformat() if item.created_at else None,
+    )
+
+
+def _public_ref_response(item, service: KnowledgePublishService | None = None) -> PublicKnowledgeRefRead:
+    context = service.get_public_ref_context(item) if service is not None else {}
+    document = context.get("document") if context else None
+    return PublicKnowledgeRefRead(
+        ref_id=item.ref_id,
+        document_id=item.document_id,
+        document_name=getattr(document, "file_name", None),
+        owner_user_id=item.owner_user_id,
+        publish_request_id=item.publish_request_id,
+        target_category=item.target_category,
+        allowed_job_categories=item.allowed_job_categories,
+        status=item.status,
+        created_by=item.created_by,
+        disabled_by=item.disabled_by,
+        disabled_at=item.disabled_at.isoformat() if item.disabled_at else None,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+        updated_at=item.updated_at.isoformat() if item.updated_at else None,
     )
 
 
@@ -391,6 +415,10 @@ def get_document(document_id: str, db: Session = Depends(get_db), user=Depends(g
         data=DocumentDetail(
             document_id=document.document_id,
             owner_user_id=document.owner_user_id,
+            effective_knowledge_space=decision.effective_knowledge_space or document.knowledge_space,
+            public_ref_id=decision.public_ref_id,
+            public_ref_status=decision.public_ref_status,
+            public_ref_category=decision.public_ref_category,
             file_name=document.file_name,
             file_type=document.file_type,
             file_size=document.file_size,
@@ -531,6 +559,21 @@ def list_my_publish_requests(db: Session = Depends(get_db), user=Depends(get_cur
     return APIResponse(data=[_publish_request_response(item, service) for item in items])
 
 
+@router.get("/knowledge/public-refs", response_model=APIResponse[list[PublicKnowledgeRefRead]])
+def list_visible_public_refs(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    service = KnowledgePublishService(db)
+    access = DocumentAccessService(db)
+    visible = []
+    for item in service.list_public_refs(status="active"):
+        document = service.get_public_ref_context(item).get("document")
+        if document is None:
+            continue
+        decision = access.can_access_document(document, user)
+        if decision.public_ref_id == item.ref_id:
+            visible.append(_public_ref_response(item, service))
+    return APIResponse(data=visible)
+
+
 @router.get("/admin/publish-requests", response_model=APIResponse[list[KnowledgePublishRequestRead]])
 def list_admin_publish_requests(status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"), db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
     service = KnowledgePublishService(db)
@@ -552,6 +595,31 @@ def review_publish_request(request_id: str, payload: KnowledgePublishReviewReque
             payload={"status": item.status, "document_id": item.document_id},
         )
         return APIResponse(data=_publish_request_response(item, service))
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
+@router.get("/admin/public-knowledge-refs", response_model=APIResponse[list[PublicKnowledgeRefRead]])
+def list_admin_public_refs(status: str | None = Query(default=None, pattern="^(active|disabled|needs_review)$"), db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
+    service = KnowledgePublishService(db)
+    items = service.list_public_refs(status=status)
+    return APIResponse(data=[_public_ref_response(item, service) for item in items])
+
+
+@router.post("/admin/public-knowledge-refs/{ref_id}/disable", response_model=APIResponse[PublicKnowledgeRefRead])
+def disable_admin_public_ref(ref_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
+    try:
+        service = KnowledgePublishService(db)
+        item = service.disable_public_ref(ref_id=ref_id, reviewer=user)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="disable_public_knowledge_ref",
+            resource_type="public_knowledge_ref",
+            resource_id=ref_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"document_id": item.document_id, "status": item.status},
+        )
+        return APIResponse(data=_public_ref_response(item, service))
     except Exception as exc:
         _handle_app_error(exc)
 

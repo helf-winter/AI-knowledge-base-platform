@@ -10,6 +10,14 @@ type StoredUser = {
   is_first_login?: boolean;
 };
 
+function readStoredToken() {
+  try {
+    return localStorage.getItem('kb_token');
+  } catch {
+    return null;
+  }
+}
+
 function readStoredUser(): StoredUser | null {
   try {
     const raw = localStorage.getItem('kb_user');
@@ -19,14 +27,31 @@ function readStoredUser(): StoredUser | null {
   }
 }
 
+function clearStoredAuth() {
+  try {
+    localStorage.removeItem('kb_token');
+    localStorage.removeItem('kb_user');
+  } catch {
+    // Ignore storage failures and let the router send the user back to login.
+  }
+}
+
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
-    const user = typeof window !== 'undefined' ? readStoredUser() : null;
+    let token: string | null = null;
+    let user: StoredUser | null = null;
+    try {
+      token = typeof window !== 'undefined' ? readStoredToken() : null;
+      user = typeof window !== 'undefined' ? readStoredUser() : null;
+    } catch {
+      clearStoredAuth();
+      token = null;
+      user = null;
+    }
     const isPublic = PUBLIC_PATHS.includes(pathname);
     const isChangePassword = pathname === CHANGE_PASSWORD_PATH;
 

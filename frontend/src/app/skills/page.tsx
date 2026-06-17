@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { RefreshCw, Puzzle, Sparkles, Search, ArrowRight, Settings2, UserRoundCog, BookMarked } from 'lucide-react';
+import { knowledgeTypeLabel, metadataStatusLabel, sourceTypeLabel, taskTypeLabel } from '@/lib/display-labels';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -138,19 +139,19 @@ export default function SkillsPage() {
   const filteredSkills = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return skills;
-    return skills.filter((skill) => [skill.name, skill.description, skill.capabilities.join(' '), skill.version].some((v) => v.toLowerCase().includes(q)));
+    return skills.filter((skill) => [skill.name, taskTypeLabel(skill.name), skill.description, skill.capabilities.join(' '), skill.capabilities.map((capability) => taskTypeLabel(capability)).join(' '), skill.version].some((v) => v.toLowerCase().includes(q)));
   }, [skills, query]);
 
   const filteredAgents = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return agents;
-    return agents.filter((agent) => [agent.name, agent.knowledge_domain, agent.description ?? '', agent.status].some((v) => v.toLowerCase().includes(q)));
+    return agents.filter((agent) => [agent.name, agent.knowledge_domain, agent.description ?? '', agent.status, metadataStatusLabel(agent.status)].some((v) => v.toLowerCase().includes(q)));
   }, [agents, query]);
 
   const filteredMetadata = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return metadata;
-    return metadata.filter((item) => [item.title, item.document_id, item.knowledge_type, item.status, item.source_type].some((v) => v.toLowerCase().includes(q)));
+    return metadata.filter((item) => [item.title, item.document_id, item.knowledge_type, knowledgeTypeLabel(item.knowledge_type), item.status, metadataStatusLabel(item.status), item.source_type, sourceTypeLabel(item.source_type)].some((v) => v.toLowerCase().includes(q)));
   }, [metadata, query]);
 
   const scopeOptions = useMemo(() => metadata.slice(0, 6), [metadata]);
@@ -181,14 +182,14 @@ export default function SkillsPage() {
                 <div key={skill.skill_id} className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <div className="text-sm font-medium text-[color:var(--text)]">{skill.name}</div>
+                      <div className="text-sm font-medium text-[color:var(--text)]">{taskTypeLabel(skill.name)}</div>
                       <div className="mt-1 text-xs text-[color:var(--muted)]">{skill.description}</div>
                     </div>
                     <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{skill.version}</Badge>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {skill.capabilities.map((cap) => (
-                      <Badge key={cap} className="bg-white text-slate-700 hover:bg-white">{cap}</Badge>
+                      <Badge key={cap} className="bg-white text-slate-700 hover:bg-white">{taskTypeLabel(cap)}</Badge>
                     ))}
                   </div>
                 </div>
@@ -283,7 +284,7 @@ export default function SkillsPage() {
                       <div className="text-sm font-medium text-[color:var(--text)]">{agent.name}</div>
                       <div className="mt-1 text-xs text-slate-600">{agent.knowledge_domain}</div>
                     </div>
-                    <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{agent.status}</Badge>
+                    <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{metadataStatusLabel(agent.status)}</Badge>
                   </div>
                   <div className="mt-2 text-xs text-slate-600">{agent.description || '没有补充说明'}</div>
                   <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
@@ -297,7 +298,7 @@ export default function SkillsPage() {
                     <div className="mb-2 font-medium text-slate-900">Skills</div>
                     <div className="flex flex-wrap gap-2">
                       {parseSkills(agent.skills_json).map((skillId) => (
-                        <Badge key={skillId} className="bg-white text-slate-700 hover:bg-white">{SKILL_LABELS[skillId] ?? skillId}</Badge>
+                        <Badge key={skillId} className="bg-white text-slate-700 hover:bg-white">{taskTypeLabel(skillId)}</Badge>
                       ))}
                     </div>
                   </div>
@@ -320,11 +321,11 @@ export default function SkillsPage() {
                 <div key={item.knowledge_id} className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="text-sm font-medium text-[color:var(--text)]">{item.title}</div>
-                    <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{item.status}</Badge>
+                    <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{metadataStatusLabel(item.status)}</Badge>
                   </div>
                   <div className="mt-2 grid gap-2 text-xs md:grid-cols-2">
-                    <div>类型：{item.knowledge_type}</div>
-                    <div>来源：{item.source_type}</div>
+                    <div>类型：{knowledgeTypeLabel(item.knowledge_type)}</div>
+                    <div>来源：{sourceTypeLabel(item.source_type)}</div>
                     <div>文档：{item.document_id}</div>
                     <div>作者：{item.author || '-'}</div>
                   </div>

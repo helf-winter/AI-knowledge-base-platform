@@ -17,6 +17,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { issueTypeLabel, parseStatusLabel, taskStatusLabel, taskTypeLabel } from '@/lib/display-labels';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -64,6 +65,16 @@ function getToken() {
   return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
 }
 
+function getCurrentUserRoles() {
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem('kb_user') : null;
+    const roles = raw ? (JSON.parse(raw) as { roles?: string[] }).roles : null;
+    return Array.isArray(roles) ? roles : [];
+  } catch {
+    return [];
+  }
+}
+
 async function authedFetch(url: string, init?: RequestInit) {
   const token = getToken();
   const headers = new Headers(init?.headers || {});
@@ -90,6 +101,8 @@ function statusTone(status: string) {
 }
 
 export default function DashboardPage() {
+  const currentUserRoles = getCurrentUserRoles();
+  const isAdminUser = currentUserRoles.includes('admin') || currentUserRoles.includes('reviewer');
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [knowledge, setKnowledge] = useState<KnowledgeMetadata[]>([]);
@@ -103,7 +116,7 @@ export default function DashboardPage() {
       const [docItems, taskItems, knowledgeItems, turnItems, learningData] = await Promise.all([
         fetchJson<DocumentItem[]>('/api/v1/documents?limit=8&offset=0', []),
         fetchJson<TaskItem[]>('/api/v1/tasks', []),
-        fetchJson<KnowledgeMetadata[]>('/api/v1/admin/knowledge-metadata', []),
+        isAdminUser ? fetchJson<KnowledgeMetadata[]>('/api/v1/admin/knowledge-metadata', []) : Promise.resolve([]),
         fetchJson<ConversationTurn[]>('/api/v1/conversation/turns', []),
         fetchJson<LearningAnalysis>('/api/v1/flywheel/learning?status=pending', {}),
       ]);
@@ -210,7 +223,7 @@ export default function DashboardPage() {
                     <div className="font-medium text-slate-950">{item.suggested_title || item.topic}</div>
                     <Badge className="bg-blue-50 text-blue-700 hover:bg-blue-50">{item.count} 次</Badge>
                   </div>
-                  <div className="mt-1 text-xs text-slate-500">主题：{item.topic}</div>
+                  <div className="mt-1 text-xs text-slate-500">主题：{issueTypeLabel(item.topic)}</div>
                 </div>
               ))
             )}
@@ -220,9 +233,11 @@ export default function DashboardPage() {
                   查看自动学习 <ArrowRight size={14} />
                 </Link>
               </Button>
-              <Button asChild variant="outline">
-                <Link href="/admin">处理知识条目</Link>
-              </Button>
+              {isAdminUser ? (
+                <Button asChild variant="outline">
+                  <Link href="/admin">处理知识条目</Link>
+                </Button>
+              ) : null}
             </div>
           </CardContent>
         </Card>
@@ -268,7 +283,7 @@ export default function DashboardPage() {
               <Link key={doc.document_id} href={`/documents/${doc.document_id}`} className="block rounded-xl border border-slate-200 bg-slate-50 p-4 transition hover:border-blue-200 hover:bg-blue-50">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0 truncate text-sm font-medium text-slate-950">{doc.file_name}</div>
-                  <Badge className={statusTone(doc.parse_status)}>{doc.parse_status}</Badge>
+                  <Badge className={statusTone(doc.parse_status)}>{parseStatusLabel(doc.parse_status)}</Badge>
                 </div>
                 <div className="mt-2 text-xs text-slate-500">类型：{doc.file_type} · 更新：{doc.updated_at ?? '-'}</div>
               </Link>
@@ -286,8 +301,8 @@ export default function DashboardPage() {
             {latestTasks.map((task) => (
               <div key={task.task_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-medium text-slate-950">{task.task_type}</div>
-                  <Badge className={statusTone(task.status)}>{task.status}</Badge>
+                  <div className="text-sm font-medium text-slate-950">{taskTypeLabel(task.task_type)}</div>
+                  <Badge className={statusTone(task.status)}>{taskStatusLabel(task.status)}</Badge>
                 </div>
                 <div className="mt-2 text-xs text-slate-500">重试：{task.retry_count} · 更新：{task.updated_at ?? '-'}</div>
               </div>

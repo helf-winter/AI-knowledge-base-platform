@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { RefreshCw, FileText, ListChecks, ShieldCheck, PencilLine, ArrowRight, ArrowLeft } from 'lucide-react';
+import { knowledgeSpaceLabel, knowledgeTypeLabel, metadataStatusLabel, parseStatusLabel, publishStatusLabel, sourceTypeLabel, taskStatusLabel, taskTypeLabel, visibilityLabel } from '@/lib/display-labels';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -24,11 +25,18 @@ type ChunkItem = {
 
 type DocumentDetail = {
   document_id: string;
+  owner_user_id?: string | null;
+  effective_knowledge_space?: string | null;
+  public_ref_id?: string | null;
+  public_ref_status?: string | null;
+  public_ref_category?: string | null;
   file_name: string;
   file_type: string;
   file_size: number;
   parse_status: string;
   visibility: string;
+  knowledge_space?: string;
+  publish_status?: string;
   storage_path: string;
   checksum: string;
   content_text?: string | null;
@@ -60,22 +68,47 @@ type TaskItem = {
   updated_at?: string | null;
 };
 
+function getToken() {
+  return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
+}
+
+function getCurrentUserRoles() {
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem('kb_user') : null;
+    const roles = raw ? (JSON.parse(raw) as { roles?: string[] }).roles : null;
+    return Array.isArray(roles) ? roles : [];
+  } catch {
+    return [];
+  }
+}
+
+async function authedFetch(url: string, init?: RequestInit) {
+  const token = getToken();
+  const headers = new Headers(init?.headers || {});
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(url, { ...init, headers });
+}
+
 async function fetchDocument(documentId: string) {
-  const res = await fetch(`${API_BASE}/api/v1/documents/${documentId}`);
+  const res = await authedFetch(`${API_BASE}/api/v1/documents/${documentId}`);
   if (!res.ok) throw new Error('加载文档详情失败');
   const json = await res.json();
   return json.data as DocumentDetail;
 }
 
+function effectiveKnowledgeSpace(doc: DocumentDetail) {
+  return doc.effective_knowledge_space || doc.knowledge_space || 'public';
+}
+
 async function fetchTasks(documentId: string) {
-  const res = await fetch(`${API_BASE}/api/v1/tasks?related_document_id=${encodeURIComponent(documentId)}`);
+  const res = await authedFetch(`${API_BASE}/api/v1/tasks?related_document_id=${encodeURIComponent(documentId)}`);
   if (!res.ok) throw new Error('加载任务状态失败');
   const json = await res.json();
   return json.data as TaskItem[];
 }
 
 async function fetchMetadata(documentId: string) {
-  const res = await fetch(`${API_BASE}/api/v1/admin/knowledge-metadata`);
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata`);
   if (!res.ok) throw new Error('加载知识元数据失败');
   const json = await res.json();
   const items = json.data as KnowledgeMetadata[];
@@ -85,6 +118,8 @@ async function fetchMetadata(documentId: string) {
 export default function DocumentDetailPage({ params }: { params: Promise<{ document_id: string }> }) {
   const searchParams = useSearchParams();
   const highlight = searchParams.get('highlight')?.toLowerCase() ?? '';
+  const currentUserRoles = getCurrentUserRoles();
+  const isAdminUser = currentUserRoles.includes('admin') || currentUserRoles.includes('reviewer');
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [metadata, setMetadata] = useState<KnowledgeMetadata[]>([]);
@@ -129,7 +164,7 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/v1/documents/${detail.document_id}/raw`);
+        const res = await authedFetch(`${API_BASE}/api/v1/documents/${detail.document_id}/raw`);
         if (!res.ok) throw new Error('PDF raw file is not available');
         const blob = await res.blob();
         if (cancelled) return;
@@ -155,7 +190,7 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/v1/documents/${detail.document_id}/raw`);
+        const res = await authedFetch(`${API_BASE}/api/v1/documents/${detail.document_id}/raw`);
         if (!res.ok) throw new Error('CSV raw file is not available');
         const text = await res.text();
         if (!cancelled) setRawText(text);
@@ -388,10 +423,17 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
               </CardHeader>
               <CardContent className="space-y-3 text-sm text-[color:var(--muted)]">
                 <div className="flex flex-wrap gap-2">
-                  <Badge>{detail.parse_status}</Badge>
+                  <Badge>{parseStatusLabel(detail.parse_status)}</Badge>
                   <Badge>{detail.file_type}</Badge>
-                  <Badge>{detail.visibility}</Badge>
+                  <Badge>{visibilityLabel(detail.visibility)}</Badge>
+                  <Badge>{knowledgeSpaceLabel(effectiveKnowledgeSpace(detail))}</Badge>
+                  <Badge>{publishStatusLabel(detail.publish_status || 'none')}</Badge>
                 </div>
+                {detail.public_ref_id && detail.knowledge_space === 'personal' ? (
+                  <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-3 text-xs text-[color:var(--muted)]">
+                    当前通过公有知识引用访问，原始文档仍属于{knowledgeSpaceLabel(detail.knowledge_space)}。
+                  </div>
+                ) : null}
                 <div>大小：{detail.file_size}</div>
                 <div>Checksum：{detail.checksum}</div>
                 <div>Storage：{detail.storage_path}</div>
@@ -414,22 +456,24 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
                     <div key={item.knowledge_id} className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm font-medium text-[color:var(--text)]">{item.title}</div>
-                        <Badge>{item.status}</Badge>
+                        <Badge>{metadataStatusLabel(item.status)}</Badge>
                       </div>
                       <div className="grid gap-2 text-xs text-[color:var(--muted)] md:grid-cols-2">
-                        <div>类型：{item.knowledge_type}</div>
+                        <div>类型：{knowledgeTypeLabel(item.knowledge_type)}</div>
                         <div>版本：{item.version}</div>
-                        <div>来源：{item.source_type}</div>
+                        <div>来源：{sourceTypeLabel(item.source_type)}</div>
                         <div>作者：{item.author || '-'}</div>
                       </div>
                       <div className="text-xs break-all text-[color:var(--muted)]">ACL：{item.acl_json || '-'}</div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button asChild size="sm" variant="outline">
-                          <Link href="/admin">
-                            <PencilLine size={14} /> 去治理页
-                          </Link>
-                        </Button>
-                      </div>
+                      {isAdminUser ? (
+                        <div className="flex flex-wrap gap-2">
+                          <Button asChild size="sm" variant="outline">
+                            <Link href="/admin">
+                              <PencilLine size={14} /> 去治理页
+                            </Link>
+                          </Button>
+                        </div>
+                      ) : null}
                     </div>
                   ))
                 )}
@@ -449,8 +493,8 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
                 tasks.map((task) => (
                   <div key={task.task_id} className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm font-medium text-[color:var(--text)]">{task.task_type}</div>
-                      <Badge>{task.status}</Badge>
+                      <div className="text-sm font-medium text-[color:var(--text)]">{taskTypeLabel(task.task_type)}</div>
+                      <Badge>{taskStatusLabel(task.status)}</Badge>
                     </div>
                     <div className="mt-2 grid gap-2 text-xs text-[color:var(--muted)] md:grid-cols-2">
                       <div>重试：{task.retry_count}</div>

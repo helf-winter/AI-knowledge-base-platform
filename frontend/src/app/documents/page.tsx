@@ -9,12 +9,17 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { knowledgeSpaceLabel, parseStatusLabel, publishStatusLabel, visibilityLabel } from '@/lib/display-labels';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
 type DocumentItem = {
   document_id: string;
   owner_user_id?: string | null;
+  effective_knowledge_space?: string | null;
+  public_ref_id?: string | null;
+  public_ref_status?: string | null;
+  public_ref_category?: string | null;
   file_name: string;
   file_type: string;
   file_size: number;
@@ -121,6 +126,16 @@ function getCurrentUserId() {
   }
 }
 
+function getCurrentUserRoles() {
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem('kb_user') : null;
+    const roles = raw ? (JSON.parse(raw) as { roles?: string[] }).roles : null;
+    return Array.isArray(roles) ? roles : [];
+  } catch {
+    return [];
+  }
+}
+
 async function authedFetch(url: string, init?: RequestInit) {
   const token = getToken();
   const headers = new Headers(init?.headers || {});
@@ -221,6 +236,10 @@ function isAccessible(item: { can_access?: boolean }) {
   return item.can_access !== false;
 }
 
+function effectiveKnowledgeSpace(doc: DocumentItem) {
+  return doc.effective_knowledge_space || doc.knowledge_space || 'public';
+}
+
 function accessStatusLabel(status: string) {
   if (status === 'approved') return '已通过';
   if (status === 'rejected') return '已拒绝';
@@ -236,11 +255,14 @@ function accessStatusClass(status: string) {
 export default function DocumentsPage() {
   const router = useRouter();
   const currentUserId = getCurrentUserId();
+  const currentUserRoles = getCurrentUserRoles();
+  const isAdminUser = currentUserRoles.includes('admin') || currentUserRoles.includes('reviewer');
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [query, setQuery] = useState('');
+  const [spaceFilter, setSpaceFilter] = useState('all');
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
@@ -300,15 +322,37 @@ export default function DocumentsPage() {
 
   useEffect(() => {
     void load();
-    void loadMyRequests();
-    void loadMyPublishRequests();
+    if (!isAdminUser) {
+      void loadMyRequests();
+      void loadMyPublishRequests();
+    }
   }, []);
 
   const filteredDocuments = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return documents;
-    return documents.filter((doc) => [doc.file_name, doc.file_type, doc.parse_status, doc.visibility, doc.access_reason].some((v) => v?.toLowerCase().includes(q)));
-  }, [documents, query]);
+    return documents.filter((doc) => {
+      const space = effectiveKnowledgeSpace(doc);
+      const spaceOk = spaceFilter === 'all' || space === spaceFilter;
+      if (!spaceOk) return false;
+      if (!q) return true;
+      return [
+        doc.file_name,
+        doc.file_type,
+        doc.parse_status,
+        parseStatusLabel(doc.parse_status),
+        doc.visibility,
+        visibilityLabel(doc.visibility_type || doc.visibility),
+        doc.knowledge_space,
+        doc.effective_knowledge_space,
+        knowledgeSpaceLabel(doc.knowledge_space),
+        knowledgeSpaceLabel(doc.effective_knowledge_space),
+        doc.public_ref_category,
+        doc.publish_status,
+        publishStatusLabel(doc.publish_status),
+        doc.access_reason,
+      ].some((v) => v?.toLowerCase().includes(q));
+    });
+  }, [documents, query, spaceFilter]);
 
   const selectedDocument = filteredDocuments.find((doc) => doc.document_id === selectedDocId) ?? filteredDocuments[0] ?? null;
 
@@ -357,7 +401,7 @@ export default function DocumentsPage() {
       doc &&
         isAccessible(doc) &&
         doc.owner_user_id === currentUserId &&
-        doc.knowledge_space === 'personal' &&
+        effectiveKnowledgeSpace(doc) === 'personal' &&
         doc.publish_status !== 'pending' &&
         doc.publish_status !== 'approved',
     );
@@ -477,11 +521,25 @@ export default function DocumentsPage() {
                 </Button>
               </div>
             </div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { value: 'all', label: '全部知识' },
+                { value: 'personal', label: '个人知识' },
+                { value: 'public', label: '公有知识' },
+                { value: 'department', label: '部门知识' },
+              ].map((item) => (
+                <Button key={item.value} size="sm" variant={spaceFilter === item.value ? 'default' : 'outline'} onClick={() => setSpaceFilter(item.value)}>
+                  {item.label}
+                </Button>
+              ))}
+            </div>
           </CardHeader>
           <CardContent className="p-0">
             {filteredDocuments.length === 0 ? (
               <div className="p-6">
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-sm text-slate-500">还没有文档。先上传一个文件开始使用。</div>
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-sm text-slate-500">
+                  {documents.length === 0 ? '还没有文档。先上传一个文件开始使用。' : '当前筛选条件下暂无文档。'}
+                </div>
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
@@ -517,7 +575,7 @@ export default function DocumentsPage() {
                             ) : (
                               <span className="truncate text-sm font-medium text-slate-950">{doc.file_name}</span>
                             )}
-                            <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{doc.parse_status}</Badge>
+                            <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{parseStatusLabel(doc.parse_status)}</Badge>
                             {canAccess ? (
                               <Badge className="bg-emerald-50 text-emerald-700 hover:bg-emerald-50">可阅读</Badge>
                             ) : (
@@ -528,9 +586,10 @@ export default function DocumentsPage() {
                           <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
                             <span>类型：{doc.file_type}</span>
                             <span>大小：{formatSize(doc.file_size)}</span>
-                            <span>可见性：{doc.visibility_type || doc.visibility}</span>
-                            <span>空间：{doc.knowledge_space || 'public'}</span>
-                            <span>发布：{doc.publish_status || 'none'}</span>
+                            <span>可见性：{visibilityLabel(doc.visibility_type || doc.visibility)}</span>
+                            <span>空间：{knowledgeSpaceLabel(effectiveKnowledgeSpace(doc))}</span>
+                            {doc.public_ref_id && doc.knowledge_space === 'personal' && <span>原始：{knowledgeSpaceLabel(doc.knowledge_space)}</span>}
+                            <span>发布：{publishStatusLabel(doc.publish_status || 'none')}</span>
                             <span>等级：L{doc.min_permission_level ?? 1}</span>
                             <span>更新：{doc.updated_at ?? '-'}</span>
                           </div>
@@ -624,6 +683,7 @@ export default function DocumentsPage() {
             </CardContent>
           </Card>
 
+          {!isAdminUser && (
           <Card className="border-slate-200 bg-white shadow-sm">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base text-slate-950"><Clock3 size={16} /> 我的申请</CardTitle>
@@ -664,7 +724,9 @@ export default function DocumentsPage() {
               )}
             </CardContent>
           </Card>
+          )}
 
+          {!isAdminUser && (
           <Card className="border-slate-200 bg-white shadow-sm">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base text-slate-950"><UploadCloud size={16} /> 我的发布申请</CardTitle>
@@ -695,6 +757,7 @@ export default function DocumentsPage() {
               )}
             </CardContent>
           </Card>
+          )}
 
           <Card className="border-slate-200 bg-white shadow-sm">
             <CardHeader className="pb-3">
@@ -713,11 +776,14 @@ export default function DocumentsPage() {
                   </div>
                   <div className="grid grid-cols-2 gap-3 text-sm text-slate-700">
                     <div className="rounded-xl bg-slate-50 p-3">类型：{selectedDocument.file_type}</div>
-                    <div className="rounded-xl bg-slate-50 p-3">状态：{selectedDocument.parse_status}</div>
+                    <div className="rounded-xl bg-slate-50 p-3">状态：{parseStatusLabel(selectedDocument.parse_status)}</div>
                     <div className="rounded-xl bg-slate-50 p-3">大小：{formatSize(selectedDocument.file_size)}</div>
                     <div className="rounded-xl bg-slate-50 p-3">权限：{isAccessible(selectedDocument) ? '可阅读' : '需申请'}</div>
-                    <div className="rounded-xl bg-slate-50 p-3">空间：{selectedDocument.knowledge_space || 'public'}</div>
-                    <div className="rounded-xl bg-slate-50 p-3">发布：{selectedDocument.publish_status || 'none'}</div>
+                    <div className="rounded-xl bg-slate-50 p-3">空间：{knowledgeSpaceLabel(effectiveKnowledgeSpace(selectedDocument))}</div>
+                    {selectedDocument.public_ref_id && selectedDocument.knowledge_space === 'personal' && (
+                      <div className="rounded-xl bg-slate-50 p-3">原始：{knowledgeSpaceLabel(selectedDocument.knowledge_space)}</div>
+                    )}
+                    <div className="rounded-xl bg-slate-50 p-3">发布：{publishStatusLabel(selectedDocument.publish_status || 'none')}</div>
                   </div>
                   {!isAccessible(selectedDocument) && (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">

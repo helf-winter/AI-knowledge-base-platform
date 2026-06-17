@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { issueTypeLabel, reviewStatusLabel, taskStatusLabel, taskTypeLabel } from '@/lib/display-labels';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -174,7 +175,7 @@ export default function TasksPage() {
             <div className="flex flex-wrap gap-2">
               {['pending', 'approved', 'rejected'].map((status) => (
                 <Button key={status} size="sm" variant={gapStatus === status ? 'default' : 'outline'} onClick={() => setGapStatus(status)}>
-                  {status}
+                  {reviewStatusLabel(status)}
                 </Button>
               ))}
               <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
@@ -202,7 +203,7 @@ export default function TasksPage() {
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <div className="font-medium text-slate-950">{insight.suggested_title || insight.topic}</div>
-                      <div className="mt-1 text-xs text-slate-500">主题：{insight.topic}</div>
+                      <div className="mt-1 text-xs text-slate-500">主题：{issueTypeLabel(insight.topic)}</div>
                     </div>
                     <Badge className="bg-blue-50 text-blue-700 hover:bg-blue-50">命中 {insight.count}</Badge>
                   </div>
@@ -244,10 +245,10 @@ export default function TasksPage() {
                 <div key={task.task_id} className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <div className="font-medium text-slate-950">{task.task_type}</div>
+                      <div className="font-medium text-slate-950">{taskTypeLabel(task.task_type)}</div>
                       <div className="mt-1 text-xs text-slate-500">{task.task_id}</div>
                     </div>
-                    <Badge className={statusStyles[task.status] ?? 'bg-slate-100 text-slate-700 hover:bg-slate-100'}>{task.status}</Badge>
+                    <Badge className={statusStyles[task.status] ?? 'bg-slate-100 text-slate-700 hover:bg-slate-100'}>{taskStatusLabel(task.status)}</Badge>
                   </div>
                   <div className="grid gap-2 text-sm text-slate-600 md:grid-cols-4">
                     <div>关联文档：{task.related_document_id ?? '-'}</div>

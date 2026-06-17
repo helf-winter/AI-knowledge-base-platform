@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import NotFoundAppError, PermissionAppError, ValidationAppError
 from app.models.core import User
-from app.models.document import Document, KnowledgePublishRequest
+from app.models.document import Document, KnowledgePublishRequest, PublicKnowledgeRef
 from app.schemas.knowledge import KnowledgePublishRequestCreate
 from app.services.auth import AuthenticatedUser
 
@@ -82,20 +82,10 @@ class KnowledgePublishService:
         item.reviewed_at = datetime.now(timezone.utc)
 
         if approve:
-            document.knowledge_space = "public"
-            document.visibility = "public"
-            document.visibility_type = "public"
-            document.visibility_scope = "public"
-            document.is_public = True
             document.publish_status = "approved"
             document.knowledge_category = item.target_category
-            document.allowed_job_categories = item.allowed_job_categories
+            self._replace_public_ref(item, document, reviewer)
         else:
-            document.knowledge_space = "personal"
-            document.visibility = "private"
-            document.visibility_type = "private"
-            document.visibility_scope = "owner"
-            document.is_public = False
             document.publish_status = "rejected"
 
         self.db.commit()
@@ -107,3 +97,54 @@ class KnowledgePublishService:
             "requester": self.db.get(User, item.requester_id),
             "document": self.db.get(Document, item.document_id),
         }
+
+    def list_public_refs(self, status: str | None = "active") -> list[PublicKnowledgeRef]:
+        stmt = select(PublicKnowledgeRef).order_by(PublicKnowledgeRef.created_at.desc())
+        if status:
+            stmt = stmt.where(PublicKnowledgeRef.status == status)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def disable_public_ref(self, ref_id: str, reviewer: AuthenticatedUser) -> PublicKnowledgeRef:
+        ref = self.db.get(PublicKnowledgeRef, ref_id)
+        if ref is None:
+            raise NotFoundAppError("public knowledge reference not found")
+        if ref.status != "active":
+            raise ValidationAppError("public knowledge reference is not active")
+        ref.status = "disabled"
+        ref.disabled_by = reviewer.user_id
+        ref.disabled_at = datetime.now(timezone.utc)
+        document = self.db.get(Document, ref.document_id)
+        if document is not None:
+            document.publish_status = "rejected"
+        self.db.commit()
+        self.db.refresh(ref)
+        return ref
+
+    def get_public_ref_context(self, ref: PublicKnowledgeRef) -> dict[str, object | None]:
+        return {"document": self.db.get(Document, ref.document_id), "owner": self.db.get(User, ref.owner_user_id) if ref.owner_user_id else None}
+
+    def _replace_public_ref(self, item: KnowledgePublishRequest, document: Document, reviewer: AuthenticatedUser) -> PublicKnowledgeRef:
+        now = datetime.now(timezone.utc)
+        active_refs = self.db.execute(
+            select(PublicKnowledgeRef).where(
+                PublicKnowledgeRef.document_id == document.document_id,
+                PublicKnowledgeRef.status == "active",
+            )
+        ).scalars().all()
+        for ref in active_refs:
+            ref.status = "disabled"
+            ref.disabled_by = reviewer.user_id
+            ref.disabled_at = now
+
+        ref = PublicKnowledgeRef(
+            ref_id=str(uuid.uuid4()),
+            document_id=document.document_id,
+            publish_request_id=item.request_id,
+            owner_user_id=document.owner_user_id,
+            target_category=item.target_category,
+            allowed_job_categories=item.allowed_job_categories,
+            status="active",
+            created_by=reviewer.user_id,
+        )
+        self.db.add(ref)
+        return ref

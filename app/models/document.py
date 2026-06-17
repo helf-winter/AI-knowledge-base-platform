@@ -117,4 +117,21 @@ class KnowledgePublishRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PublicKnowledgeRef(Base):
+    __tablename__ = "public_knowledge_refs"
+
+    ref_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.document_id", ondelete="CASCADE"), index=True, nullable=False)
+    publish_request_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("knowledge_publish_requests.request_id", ondelete="SET NULL"), index=True, nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(36), index=True, nullable=True)
+    target_category: Mapped[str] = mapped_column(String(128), nullable=False)
+    allowed_job_categories: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    disabled_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 from app.models.core import KnowledgeMetadata  # noqa: E402

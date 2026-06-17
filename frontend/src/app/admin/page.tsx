@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { knowledgeTypeLabel, metadataStatusLabel, reviewStatusLabel, riskLevelLabel, sourceTypeLabel, suggestionLabel as displaySuggestionLabel } from '@/lib/display-labels';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -195,14 +196,11 @@ async function deleteMetadata(knowledgeId: string) {
 }
 
 function statusLabel(status: string) {
-  return status === 'approved' ? '已通过' : status === 'rejected' ? '已拒绝' : status === '待审核' ? '待审核' : status;
+  return reviewStatusLabel(status);
 }
 
 function suggestionLabel(suggestion?: string | null) {
-  if (suggestion === 'approve') return '建议通过';
-  if (suggestion === 'reject') return '建议拒绝';
-  if (suggestion === 'review') return '建议人工复核';
-  return '尚未生成';
+  return suggestion ? displaySuggestionLabel(suggestion) : '尚未生成';
 }
 
 function riskClass(level?: string | null) {
@@ -386,7 +384,7 @@ export default function AdminPage() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Badge className="bg-white text-slate-700 hover:bg-white">{suggestionLabel(selectedRequest.ai_suggestion)}</Badge>
-                    <Badge className={riskClass(selectedRequest.ai_risk_level)}>风险：{selectedRequest.ai_risk_level || '-'}</Badge>
+                    <Badge className={riskClass(selectedRequest.ai_risk_level)}>风险：{riskLevelLabel(selectedRequest.ai_risk_level)}</Badge>
                   </div>
                   <p className="text-sm leading-7 text-slate-700">{selectedRequest.ai_reason || '尚未生成 AI 建议。DeepSeek 不可用时，系统会使用规则 fallback 生成建议。'}</p>
                 </div>
@@ -499,7 +497,7 @@ export default function AdminPage() {
         <Card className="border-slate-200 bg-white shadow-sm">
           <CardHeader className="border-b border-slate-100 pb-4">
             <CardTitle className="flex items-center gap-2 text-base text-slate-900"><FileText size={16} /> 发布详情</CardTitle>
-            <CardDescription className="text-slate-700">审核通过会把知识空间从 personal 转为 public。</CardDescription>
+            <CardDescription className="text-slate-700">审核通过会把知识空间从个人知识转为公有知识。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 pt-4">
             {selectedPublishRequest ? (
@@ -630,7 +628,7 @@ export default function AdminPage() {
               <div className="flex flex-wrap gap-2">
                 {['', 'reviewing', 'available', 'disabled'].map((item) => (
                   <Button key={item || 'all'} size="sm" variant={filter === item ? 'default' : 'outline'} onClick={() => setFilter(item)}>
-                    {item || '全部'}
+                    {item ? metadataStatusLabel(item) : '全部'}
                   </Button>
                 ))}
               </div>
@@ -646,12 +644,12 @@ export default function AdminPage() {
                       <div className="font-medium text-slate-900">{item.title}</div>
                       <div className="text-xs text-slate-500">{item.document_id}</div>
                     </div>
-                    <Badge className="bg-white text-slate-700 hover:bg-white">{item.status}</Badge>
+                    <Badge className="bg-white text-slate-700 hover:bg-white">{metadataStatusLabel(item.status)}</Badge>
                   </div>
                   <div className="grid gap-2 text-xs text-slate-500 md:grid-cols-2">
-                    <div>类型：{item.knowledge_type}</div>
+                    <div>类型：{knowledgeTypeLabel(item.knowledge_type)}</div>
                     <div>版本：{item.version}</div>
-                    <div>来源：{item.source_type}</div>
+                    <div>来源：{sourceTypeLabel(item.source_type)}</div>
                     <div>作者：{item.author || '-'}</div>
                   </div>
                   <div className="break-all text-xs text-slate-500">ACL：{item.acl_json || '-'}</div>

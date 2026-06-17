@@ -12,6 +12,10 @@ class DocumentCreateResponse(BaseModel):
 class DocumentItem(BaseModel):
     document_id: str
     owner_user_id: str | None = None
+    effective_knowledge_space: str | None = None
+    public_ref_id: str | None = None
+    public_ref_status: str | None = None
+    public_ref_category: str | None = None
     file_name: str
     file_type: str
     file_size: int
@@ -54,6 +58,10 @@ class ChunkItem(BaseModel):
 class DocumentDetail(BaseModel):
     document_id: str
     owner_user_id: str | None = None
+    effective_knowledge_space: str | None = None
+    public_ref_id: str | None = None
+    public_ref_status: str | None = None
+    public_ref_category: str | None = None
     file_name: str
     file_type: str
     file_size: int
@@ -212,3 +220,19 @@ class KnowledgePublishRequestRead(BaseModel):
 class KnowledgePublishReviewRequest(BaseModel):
     approve: bool
     review_comment: str | None = Field(default=None, max_length=1000)
+
+
+class PublicKnowledgeRefRead(BaseModel):
+    ref_id: str
+    document_id: str
+    document_name: str | None = None
+    owner_user_id: str | None = None
+    publish_request_id: str | None = None
+    target_category: str
+    allowed_job_categories: str
+    status: str
+    created_by: str | None = None
+    disabled_by: str | None = None
+    disabled_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
