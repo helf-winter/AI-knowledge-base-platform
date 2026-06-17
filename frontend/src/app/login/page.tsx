@@ -22,6 +22,30 @@ type AuthPayload = {
   roles: string[];
 };
 
+function normalizeLoginError(status: number, body: string) {
+  let detail = body;
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    if (typeof parsed.detail === 'string') {
+      detail = parsed.detail;
+    }
+  } catch {
+    detail = body;
+  }
+
+  const normalized = detail.toLowerCase();
+  if (status === 401 || normalized.includes('invalid credentials')) {
+    return '账号或密码错误，请重新输入';
+  }
+  if (status === 403 || normalized.includes('disabled')) {
+    return '该账号已被禁用，请联系管理员';
+  }
+  if (status >= 500) {
+    return '服务器暂时不可用，请稍后再试';
+  }
+  return detail || '登录失败，请检查账号或密码';
+}
+
 async function login(account: string, password: string) {
   const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
     method: 'POST',
@@ -30,7 +54,7 @@ async function login(account: string, password: string) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(text || '登录失败，请检查账号或密码');
+    throw new Error(normalizeLoginError(res.status, text));
   }
   const json = await res.json();
   return json.data as AuthPayload;
@@ -38,8 +62,8 @@ async function login(account: string, password: string) {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [account, setAccount] = useState('admin');
-  const [password, setPassword] = useState('123456');
+  const [account, setAccount] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
