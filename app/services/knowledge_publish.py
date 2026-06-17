@@ -52,6 +52,40 @@ class KnowledgePublishService:
         self.db.refresh(request)
         return request
 
+    def create_admin_request(self, payload: KnowledgePublishRequestCreate, reviewer: AuthenticatedUser) -> KnowledgePublishRequest:
+        if not {"admin", "reviewer"}.intersection(set(reviewer.roles)):
+            raise PermissionAppError("只有管理员可以代为提交自动学习草稿发布申请")
+        document = self.db.get(Document, payload.document_id)
+        if document is None:
+            raise NotFoundAppError("文档不存在")
+        if document.knowledge_space != "personal":
+            raise ValidationAppError("只有个人知识可以提交到公有知识库")
+
+        existed = self.db.execute(
+            select(KnowledgePublishRequest).where(
+                KnowledgePublishRequest.document_id == document.document_id,
+                KnowledgePublishRequest.status == "pending",
+            )
+        ).scalar_one_or_none()
+        if existed is not None:
+            return existed
+
+        request = KnowledgePublishRequest(
+            request_id=str(uuid.uuid4()),
+            document_id=document.document_id,
+            requester_id=document.owner_user_id or reviewer.user_id,
+            target_category=payload.target_category.strip(),
+            allowed_job_categories=payload.allowed_job_categories.strip(),
+            publish_reason=payload.publish_reason.strip(),
+            business_purpose=payload.business_purpose.strip(),
+            status="pending",
+        )
+        document.publish_status = "pending"
+        self.db.add(request)
+        self.db.commit()
+        self.db.refresh(request)
+        return request
+
     def list_my_requests(self, user: AuthenticatedUser) -> list[KnowledgePublishRequest]:
         stmt = select(KnowledgePublishRequest).where(KnowledgePublishRequest.requester_id == user.user_id).order_by(KnowledgePublishRequest.created_at.desc())
         return list(self.db.execute(stmt).scalars().all())

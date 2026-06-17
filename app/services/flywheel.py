@@ -1,25 +1,54 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.exceptions import NotFoundAppError, ValidationAppError
 from app.models.core import KnowledgeMetadata, TaskRecord
+from app.models.document import Document, DocumentChunk
 from app.models.flywheel import KnowledgeGap
-from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapReview
+from app.models.vector import ChunkEmbedding
+from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapReview, LearningGapDraftCreate, LearningGapDraftReview
+from app.schemas.knowledge import KnowledgePublishRequestCreate
+from app.services.auth import AuthenticatedUser
+from app.services.embedding import fake_embedding
+from app.services.knowledge_publish import KnowledgePublishService
+from app.services.storage import calculate_sha256
 
+settings = get_settings()
 
 class KnowledgeFlywheelService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
     def create_gap(self, payload: KnowledgeGapCreate) -> KnowledgeGap:
+        normalized_question = self.normalize_gap_question(payload.query_text)
+        cluster_key = self._cluster_key(payload.query_text, payload.issue_type)
+        existing = self.db.execute(
+            select(KnowledgeGap).where(
+                KnowledgeGap.normalized_question == normalized_question,
+                KnowledgeGap.issue_type == payload.issue_type,
+                KnowledgeGap.status.in_(["pending", "clustered", "drafted"]),
+            )
+        ).scalars().first()
+        if existing is not None:
+            existing.hit_count = int(existing.hit_count or 1) + 1
+            existing.confidence = min(float(existing.confidence or 0.0), payload.confidence)
+            if payload.evidence:
+                existing.evidence = self._append_evidence(existing.evidence, payload.evidence)
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+
         gap = KnowledgeGap(
             gap_id=str(uuid.uuid4()),
             query_text=payload.query_text,
@@ -29,6 +58,9 @@ class KnowledgeFlywheelService:
             issue_type=payload.issue_type,
             confidence=payload.confidence,
             evidence=payload.evidence,
+            normalized_question=normalized_question,
+            cluster_key=cluster_key,
+            hit_count=1,
             status="pending",
         )
         self.db.add(gap)
@@ -42,6 +74,14 @@ class KnowledgeFlywheelService:
             stmt = stmt.where(KnowledgeGap.status == status)
         stmt = stmt.order_by(KnowledgeGap.created_at.desc())
         return list(self.db.execute(stmt).scalars().all())
+
+    def normalize_gap_question(self, text: str) -> str:
+        value = text.strip().lower()
+        value = re.sub(r"\s+", "", value)
+        value = re.sub(r"[？?。,.，!！；;：:、\"'`~|/\\\-_+=()[\]{}<>《》]", "", value)
+        for word in ["请问", "麻烦", "如何", "怎么", "怎样", "我想", "我要", "能否", "可以"]:
+            value = value.replace(word, "")
+        return value[:120] or text.strip().lower()[:120]
 
     def review_gap(self, gap_id: str, payload: KnowledgeGapReview) -> KnowledgeGap:
         gap = self._get_gap(gap_id)
@@ -63,6 +103,93 @@ class KnowledgeFlywheelService:
         gap.status = "approved"
         gap.suggested_title = title.strip()
         gap.suggested_content = content.strip()
+        self.db.commit()
+        self.db.refresh(gap)
+        return gap
+
+    def generate_gap_draft(self, gap_id: str, payload: LearningGapDraftCreate, user: AuthenticatedUser) -> KnowledgeGap:
+        gap = self._get_gap(gap_id)
+        if gap.status in {"approved", "rejected", "ignored"}:
+            raise ValidationAppError("已完成处理的知识缺口不能重新生成草稿")
+
+        draft = self._ask_deepseek_for_draft(gap, payload) or self._fallback_draft(gap, payload)
+        title = str(draft.get("title") or self._build_title(gap.issue_type, [gap.query_text])).strip()[:120]
+        content = str(draft.get("draft_content") or "").strip()
+        confirmations = draft.get("pending_confirmations") or []
+        if isinstance(confirmations, list):
+            pending_confirmations = "\n".join(f"- {item}" for item in confirmations if str(item).strip())
+        else:
+            pending_confirmations = str(confirmations).strip()
+        if not pending_confirmations:
+            pending_confirmations = "- 适用范围\n- 负责人或审批人\n- 官方入口或文档链接\n- 注意事项"
+        if not content:
+            content = self._fallback_draft(gap, payload)["draft_content"]
+
+        document = self._ensure_draft_document(gap, title, content, user)
+        gap.suggested_title = title
+        gap.suggested_content = content
+        gap.ai_draft_content = content
+        gap.pending_confirmations = pending_confirmations
+        gap.draft_document_id = document.document_id
+        gap.target_category = payload.target_category.strip()
+        gap.allowed_job_categories = payload.allowed_job_categories.strip()
+        gap.business_purpose = payload.business_purpose.strip()
+        gap.status = "drafted"
+        self.db.commit()
+        self.db.refresh(gap)
+        return gap
+
+    def review_gap_draft(self, gap_id: str, payload: LearningGapDraftReview, reviewer: AuthenticatedUser) -> KnowledgeGap:
+        gap = self._get_gap(gap_id)
+        if gap.status in {"approved", "rejected"}:
+            raise ValidationAppError("已审核的知识缺口不能重复审核")
+        if not gap.draft_document_id:
+            raise ValidationAppError("请先生成知识草稿")
+
+        document = self.db.get(Document, gap.draft_document_id)
+        if document is None:
+            raise NotFoundAppError("草稿文档不存在")
+
+        gap.review_comment = (payload.review_comment or "").strip() or None
+        gap.reviewed_by = reviewer.user_id
+        gap.reviewed_at = datetime.now(timezone.utc)
+
+        if not payload.approve:
+            gap.status = "rejected"
+            document.publish_status = "rejected"
+            self.db.commit()
+            self.db.refresh(gap)
+            return gap
+
+        final_content = (payload.admin_final_content or gap.ai_draft_content or gap.suggested_content or "").strip()
+        if not final_content:
+            raise ValidationAppError("通过发布前需要填写管理员定稿内容")
+
+        target_category = (payload.target_category or gap.target_category or "").strip()
+        allowed_jobs = (payload.allowed_job_categories or gap.allowed_job_categories or "").strip()
+        if not target_category:
+            raise ValidationAppError("通过发布前需要填写目标分类")
+        if not allowed_jobs:
+            raise ValidationAppError("通过发布前需要填写可访问人员工作类别")
+
+        gap.admin_final_content = final_content
+        gap.target_category = target_category
+        gap.allowed_job_categories = allowed_jobs
+        self._replace_document_content(document, final_content)
+
+        publish_service = KnowledgePublishService(self.db)
+        request = publish_service.create_admin_request(
+            KnowledgePublishRequestCreate(
+                document_id=document.document_id,
+                target_category=target_category,
+                allowed_job_categories=allowed_jobs,
+                publish_reason=f"自动学习知识缺口审核通过：{gap.query_text[:120]}",
+                business_purpose=gap.business_purpose or "补齐企业知识库缺口，提升后续问答命中率",
+            ),
+            reviewer=reviewer,
+        )
+        publish_service.review_request(request_id=request.request_id, approve=True, reviewer=reviewer, review_comment=gap.review_comment)
+        gap.status = "approved"
         self.db.commit()
         self.db.refresh(gap)
         return gap
@@ -195,6 +322,177 @@ class KnowledgeFlywheelService:
         self.db.commit()
         self.db.refresh(task)
         return task
+
+    def _ask_deepseek_for_draft(self, gap: KnowledgeGap, payload: LearningGapDraftCreate) -> dict[str, object] | None:
+        if not settings.deepseek_api_key:
+            return None
+        prompt = {
+            "task": "你是企业知识管理平台的知识草稿助手。请根据知识缺口生成可编辑草稿，但不要声称未经确认的信息是事实。",
+            "output_schema": {
+                "title": "简短标题",
+                "draft_content": "Markdown 草稿正文",
+                "pending_confirmations": ["需要管理员确认的事项"],
+                "risk_note": "风险说明",
+            },
+            "gap": {
+                "query_text": gap.query_text,
+                "issue_type": gap.issue_type,
+                "confidence": gap.confidence,
+                "evidence": gap.evidence,
+                "hit_count": gap.hit_count,
+            },
+            "publish_intent": {
+                "target_category": payload.target_category,
+                "allowed_job_categories": payload.allowed_job_categories,
+                "business_purpose": payload.business_purpose,
+            },
+        }
+        request_payload = {
+            "model": settings.deepseek_model,
+            "messages": [
+                {"role": "system", "content": "只输出 JSON，不要输出 Markdown 代码块。AI 只生成草稿，最终发布必须由管理员审核。"},
+                {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+            ],
+            "stream": False,
+            "temperature": 0.2,
+        }
+        headers = {"Authorization": f"Bearer {settings.deepseek_api_key}", "Content-Type": "application/json"}
+        try:
+            response = httpx.post(f"{settings.deepseek_base_url.rstrip('/')}/chat/completions", headers=headers, json=request_payload, timeout=30.0)
+            response.raise_for_status()
+            content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            return self._parse_json_object(content)
+        except Exception:
+            return None
+
+    def _parse_json_object(self, content: str) -> dict[str, object] | None:
+        text = content.strip()
+        if not text:
+            return None
+        if text.startswith("```"):
+            text = text.strip("`").strip()
+            if text.lower().startswith("json"):
+                text = text[4:].strip()
+        try:
+            data = json.loads(text)
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _fallback_draft(self, gap: KnowledgeGap, payload: LearningGapDraftCreate) -> dict[str, object]:
+        title = self._build_title(gap.issue_type, [gap.query_text])
+        content = (
+            f"# 待补充知识：{gap.query_text.strip()}\n\n"
+            "## 问题背景\n"
+            "系统发现该问题在问答中未被充分回答，可能代表当前知识库存在缺口。\n\n"
+            "## AI 草稿\n"
+            "请管理员根据企业实际流程补充标准答案。可以重点确认办理入口、责任人、审批流程、适用范围和注意事项。\n\n"
+            "## 建议发布范围\n"
+            f"- 目标分类：{payload.target_category.strip()}\n"
+            f"- 可访问人员工作类别：{payload.allowed_job_categories.strip()}\n"
+            f"- 业务用途：{payload.business_purpose.strip()}\n\n"
+            "## 风险说明\n"
+            "该内容由规则 fallback 生成，只能作为编辑起点，不能直接作为最终事实发布。"
+        )
+        return {
+            "title": title,
+            "draft_content": content,
+            "pending_confirmations": ["适用范围", "负责人或审批人", "官方入口或文档链接", "注意事项"],
+            "risk_note": "规则 fallback 草稿，需管理员确认。",
+        }
+
+    def _ensure_draft_document(self, gap: KnowledgeGap, title: str, content: str, user: AuthenticatedUser) -> Document:
+        document = self.db.get(Document, gap.draft_document_id) if gap.draft_document_id else None
+        if document is None:
+            doc_id = str(uuid.uuid4())
+            encoded = content.encode("utf-8")
+            document = Document(
+                document_id=doc_id,
+                owner_user_id=user.user_id,
+                file_name=f"自动学习草稿-{self._safe_title(title)}.md",
+                file_type="md",
+                file_size=len(encoded),
+                storage_path=f"generated://learning-gap/{doc_id}.md",
+                checksum=hashlib.sha256(encoded).hexdigest(),
+                parse_status="succeeded",
+                visibility="private",
+                visibility_type="private",
+                knowledge_space="personal",
+                visibility_scope="owner",
+                publish_status="none",
+                is_public=False,
+                content_text=content,
+            )
+            self.db.add(document)
+            self.db.flush()
+            self._replace_document_content(document, content)
+            self.db.add(
+                KnowledgeMetadata(
+                    knowledge_id=str(uuid.uuid4()),
+                    document_id=document.document_id,
+                    title=title,
+                    author=user.display_name,
+                    knowledge_type="auto_learning_draft",
+                    version="v1.0.0",
+                    status="reviewing",
+                    source_type="auto_learning",
+                    acl_json=None,
+                )
+            )
+        else:
+            document.file_name = document.file_name or f"自动学习草稿-{self._safe_title(title)}.md"
+            document.owner_user_id = document.owner_user_id or user.user_id
+            document.knowledge_space = "personal"
+            document.visibility = "private"
+            document.visibility_type = "private"
+            document.visibility_scope = "owner"
+            document.is_public = False
+            document.publish_status = "none"
+            self._replace_document_content(document, content)
+        return document
+
+    def _replace_document_content(self, document: Document, content: str) -> None:
+        document.content_text = content
+        document.file_size = len(content.encode("utf-8"))
+        document.checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        document.parse_status = "succeeded"
+        chunks = list(self.db.execute(select(DocumentChunk).where(DocumentChunk.document_id == document.document_id)).scalars().all())
+        for chunk in chunks:
+            self.db.delete(chunk)
+        self.db.flush()
+        chunk_text = content.strip() or document.file_name
+        chunk = DocumentChunk(
+            chunk_id=str(uuid.uuid4()),
+            document_id=document.document_id,
+            chunk_index=0,
+            content=chunk_text,
+            token_count=max(1, len(chunk_text.split())),
+            overlap_count=0,
+            content_hash=calculate_sha256(chunk_text.encode("utf-8")),
+            language="zh",
+            embedding_json=None,
+        )
+        self.db.add(chunk)
+        self.db.flush()
+        vector = fake_embedding(chunk_text)
+        self.db.add(
+            ChunkEmbedding(
+                embedding_id=str(uuid.uuid4()),
+                chunk_id=chunk.chunk_id,
+                embedding_model="bge-m3",
+                dimension=len(vector),
+                vector=vector,
+            )
+        )
+
+    def _safe_title(self, title: str) -> str:
+        value = "".join(ch for ch in title.strip() if ch.isalnum() or ch in (" ", "-", "_")).strip()
+        return (value[:40] or "知识缺口").strip()
+
+    def _append_evidence(self, current: str | None, addition: str) -> str:
+        parts = [part for part in [current, addition] if part]
+        text = "\n".join(parts)
+        return text[-4000:]
 
     def _build_title(self, issue_type: str, questions: list[str]) -> str:
         base = self._normalize_issue_type(issue_type)

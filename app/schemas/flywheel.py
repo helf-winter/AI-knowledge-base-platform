@@ -19,6 +19,20 @@ class KnowledgeGapReview(BaseModel):
     content: str | None = None
 
 
+class LearningGapDraftCreate(BaseModel):
+    target_category: str = Field(min_length=1, max_length=128)
+    allowed_job_categories: str = Field(min_length=1, max_length=1000)
+    business_purpose: str = Field(min_length=1, max_length=1000)
+
+
+class LearningGapDraftReview(BaseModel):
+    approve: bool
+    admin_final_content: str | None = Field(default=None, max_length=20000)
+    target_category: str | None = Field(default=None, max_length=128)
+    allowed_job_categories: str | None = Field(default=None, max_length=1000)
+    review_comment: str | None = Field(default=None, max_length=1000)
+
+
 class KnowledgeGapRecord(BaseModel):
     gap_id: str
     query_text: str
@@ -28,10 +42,33 @@ class KnowledgeGapRecord(BaseModel):
     issue_type: str
     confidence: float
     evidence: str | None = None
+    normalized_question: str | None = None
+    cluster_key: str | None = None
+    hit_count: int = 1
     suggested_title: str | None = None
     suggested_content: str | None = None
+    draft_document_id: str | None = None
+    ai_draft_content: str | None = None
+    pending_confirmations: str | None = None
+    admin_final_content: str | None = None
+    target_category: str | None = None
+    allowed_job_categories: str | None = None
+    business_purpose: str | None = None
+    review_comment: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
     status: str
     created_at: str | None = None
+    updated_at: str | None = None
+
+
+class LearningGapDraftRead(BaseModel):
+    gap_id: str
+    draft_document_id: str | None = None
+    suggested_title: str | None = None
+    ai_draft_content: str
+    pending_confirmations: str
+    status: str
 
 
 class LearningInsightRead(BaseModel):

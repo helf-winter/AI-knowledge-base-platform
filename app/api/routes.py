@@ -22,7 +22,7 @@ from app.schemas.batch import BatchImportCreate, BatchImportRead
 from app.schemas.common import APIResponse
 from app.schemas.conversation import ConversationTurnCreate, ConversationTurnRead
 from app.schemas.evaluation import EvaluationCaseCreate, EvaluationCaseRead, EvaluationRunCreate, EvaluationRunRead, EvaluationResultRead
-from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead
+from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead, LearningGapDraftCreate, LearningGapDraftRead, LearningGapDraftReview
 from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, PublicKnowledgeRefRead, SearchRequest, SearchResponse
 from app.schemas.observability import AlertEventRead, AlertRuleCreate, AlertRuleRead, MetricSnapshotCreate
 from app.schemas.task import TaskRead
@@ -221,6 +221,37 @@ def _public_ref_response(item, service: KnowledgePublishService | None = None) -
         disabled_at=item.disabled_at.isoformat() if item.disabled_at else None,
         created_at=item.created_at.isoformat() if item.created_at else None,
         updated_at=item.updated_at.isoformat() if item.updated_at else None,
+    )
+
+
+def _gap_response(item) -> KnowledgeGapRecord:
+    return KnowledgeGapRecord(
+        gap_id=item.gap_id,
+        query_text=item.query_text,
+        session_id=item.session_id,
+        user_id=item.user_id,
+        answer_id=item.answer_id,
+        issue_type=item.issue_type,
+        confidence=item.confidence,
+        evidence=item.evidence,
+        normalized_question=getattr(item, "normalized_question", None),
+        cluster_key=getattr(item, "cluster_key", None),
+        hit_count=int(getattr(item, "hit_count", 1) or 1),
+        suggested_title=item.suggested_title,
+        suggested_content=item.suggested_content,
+        draft_document_id=getattr(item, "draft_document_id", None),
+        ai_draft_content=getattr(item, "ai_draft_content", None),
+        pending_confirmations=getattr(item, "pending_confirmations", None),
+        admin_final_content=getattr(item, "admin_final_content", None),
+        target_category=getattr(item, "target_category", None),
+        allowed_job_categories=getattr(item, "allowed_job_categories", None),
+        business_purpose=getattr(item, "business_purpose", None),
+        review_comment=getattr(item, "review_comment", None),
+        reviewed_by=getattr(item, "reviewed_by", None),
+        reviewed_at=item.reviewed_at.isoformat() if getattr(item, "reviewed_at", None) else None,
+        status=item.status,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+        updated_at=item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
     )
 
 
@@ -476,6 +507,58 @@ def run_flywheel(hours: int = Query(default=24, ge=1, le=168), min_confidence: f
     task = service.create_learning_task(hours=hours, min_confidence=min_confidence)
     AuditService(db).record(user_id=user.user_id, action="auto_learning", resource_type="task", resource_id=task.task_id, trace_id=str(uuid.uuid4()), payload={"hours": hours, "min_confidence": min_confidence})
     return APIResponse(data={"task_id": task.task_id, "status": task.status})
+
+
+@router.get("/admin/learning-gaps", response_model=APIResponse[list[KnowledgeGapRecord]])
+def list_admin_learning_gaps(status: str | None = Query(default=None, pattern="^(pending|clustered|drafted|approved|rejected|merged|ignored)$"), db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
+    service = KnowledgeFlywheelService(db)
+    items = service.list_gaps(status=status)
+    return APIResponse(data=[_gap_response(item) for item in items])
+
+
+@router.post("/admin/learning-gaps/{gap_id}/draft", response_model=APIResponse[LearningGapDraftRead])
+def generate_learning_gap_draft(gap_id: str, payload: LearningGapDraftCreate, request: Request, db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
+    try:
+        service = KnowledgeFlywheelService(db)
+        item = service.generate_gap_draft(gap_id=gap_id, payload=payload, user=user)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="generate_learning_gap_draft",
+            resource_type="knowledge_gap",
+            resource_id=gap_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"draft_document_id": item.draft_document_id, "status": item.status},
+        )
+        return APIResponse(
+            data=LearningGapDraftRead(
+                gap_id=item.gap_id,
+                draft_document_id=item.draft_document_id,
+                suggested_title=item.suggested_title,
+                ai_draft_content=item.ai_draft_content or item.suggested_content or "",
+                pending_confirmations=item.pending_confirmations or "",
+                status=item.status,
+            )
+        )
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
+@router.post("/admin/learning-gaps/{gap_id}/review", response_model=APIResponse[KnowledgeGapRecord])
+def review_learning_gap_draft(gap_id: str, payload: LearningGapDraftReview, request: Request, db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
+    try:
+        service = KnowledgeFlywheelService(db)
+        item = service.review_gap_draft(gap_id=gap_id, payload=payload, reviewer=user)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="approve_learning_gap_draft" if payload.approve else "reject_learning_gap_draft",
+            resource_type="knowledge_gap",
+            resource_id=gap_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"draft_document_id": item.draft_document_id, "status": item.status},
+        )
+        return APIResponse(data=_gap_response(item))
+    except Exception as exc:
+        _handle_app_error(exc)
 
 
 @router.post("/tasks/{task_id}/retry", response_model=APIResponse[TaskRead])
