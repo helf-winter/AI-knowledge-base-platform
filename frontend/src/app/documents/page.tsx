@@ -3,11 +3,12 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, FileUp, RefreshCw, Search, UploadCloud, Trash2, Sparkles, FileText } from 'lucide-react';
+import { ArrowRight, Clock3, FileText, FileUp, LockKeyhole, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, UploadCloud } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
@@ -18,6 +19,15 @@ type DocumentItem = {
   file_size: number;
   parse_status: string;
   visibility: string;
+  visibility_type?: string;
+  allowed_departments?: string | null;
+  min_permission_level?: number;
+  security_level?: string;
+  is_public?: boolean;
+  document_status?: string;
+  can_access?: boolean;
+  need_apply?: boolean;
+  access_reason?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -33,9 +43,34 @@ type SearchItem = {
   source_file_name?: string | null;
   file_type?: string | null;
   updated_at?: string | null;
+  can_access?: boolean;
+  need_apply?: boolean;
+  access_reason?: string | null;
 };
 
-const MULTIMODAL_HINTS: Record<string, string> = {
+type AccessRequestTarget = {
+  document_id: string;
+  file_name: string;
+  reason?: string | null;
+};
+
+type MyAccessRequest = {
+  request_id: string;
+  document_id: string;
+  document_name?: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  reason: string;
+  business_purpose: string;
+  expected_duration?: string | null;
+  ai_suggestion?: string | null;
+  ai_risk_level?: string | null;
+  ai_reason?: string | null;
+  review_comment?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string | null;
+};
+
+const FILE_HINTS: Record<string, string> = {
   pdf: 'PDF 文档',
   docx: 'Word 文档',
   txt: '纯文本',
@@ -72,7 +107,7 @@ async function fetchDocuments() {
   const res = await authedFetch(`${API_BASE}/api/v1/documents?limit=50&offset=0`);
   if (!res.ok) throw new Error('加载文档列表失败');
   const json = await res.json();
-  return json.data as DocumentItem[];
+  return (json.data ?? []) as DocumentItem[];
 }
 
 async function uploadDocument(file: File) {
@@ -97,7 +132,54 @@ async function searchKnowledge(query: string) {
     throw new Error(text || '检索失败');
   }
   const json = await res.json();
-  return json.data?.results as SearchItem[];
+  return (json.data?.results ?? []) as SearchItem[];
+}
+
+async function submitAccessRequest(target: AccessRequestTarget, reason: string, businessPurpose: string, expectedDuration: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/access-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      document_id: target.document_id,
+      reason,
+      business_purpose: businessPurpose,
+      expected_duration: expectedDuration || null,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '提交访问申请失败');
+  }
+  return res.json();
+}
+
+async function fetchMyAccessRequests() {
+  const res = await authedFetch(`${API_BASE}/api/v1/access-requests/my`);
+  if (!res.ok) throw new Error('加载我的申请失败');
+  const json = await res.json();
+  return (json.data ?? []) as MyAccessRequest[];
+}
+
+function formatSize(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isAccessible(item: { can_access?: boolean }) {
+  return item.can_access !== false;
+}
+
+function accessStatusLabel(status: string) {
+  if (status === 'approved') return '已通过';
+  if (status === 'rejected') return '已拒绝';
+  return '待审核';
+}
+
+function accessStatusClass(status: string) {
+  if (status === 'approved') return 'bg-emerald-50 text-emerald-700 hover:bg-emerald-50';
+  if (status === 'rejected') return 'bg-red-50 text-red-700 hover:bg-red-50';
+  return 'bg-amber-50 text-amber-700 hover:bg-amber-50';
 }
 
 export default function DocumentsPage() {
@@ -111,6 +193,13 @@ export default function DocumentsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [requestTarget, setRequestTarget] = useState<AccessRequestTarget | null>(null);
+  const [requestReason, setRequestReason] = useState('');
+  const [businessPurpose, setBusinessPurpose] = useState('');
+  const [expectedDuration, setExpectedDuration] = useState('7天');
+  const [requestSubmitting, setRequestSubmitting] = useState(false);
+  const [myRequests, setMyRequests] = useState<MyAccessRequest[]>([]);
+  const [myRequestsLoading, setMyRequestsLoading] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -127,14 +216,26 @@ export default function DocumentsPage() {
     }
   };
 
+  const loadMyRequests = async () => {
+    setMyRequestsLoading(true);
+    try {
+      setMyRequests(await fetchMyAccessRequests());
+    } catch (error) {
+      console.warn(error);
+    } finally {
+      setMyRequestsLoading(false);
+    }
+  };
+
   useEffect(() => {
     void load();
+    void loadMyRequests();
   }, []);
 
   const filteredDocuments = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return documents;
-    return documents.filter((doc) => [doc.file_name, doc.file_type, doc.parse_status, doc.visibility].some((v) => v?.toLowerCase().includes(q)));
+    return documents.filter((doc) => [doc.file_name, doc.file_type, doc.parse_status, doc.visibility, doc.access_reason].some((v) => v?.toLowerCase().includes(q)));
   }, [documents, query]);
 
   const selectedDocument = filteredDocuments.find((doc) => doc.document_id === selectedDocId) ?? filteredDocuments[0] ?? null;
@@ -146,23 +247,37 @@ export default function DocumentsPage() {
       list.push(item);
       map.set(item.document_id, list);
     });
-    return Array.from(map.entries()).map(([documentId, items]) => ({
-      documentId,
-      fileName: items[0]?.source_file_name ?? 'unknown',
-      fileType: items[0]?.file_type ?? 'unknown',
-      updatedAt: items[0]?.updated_at ?? '-',
-      items,
-      bestScore: items[0]?.score ?? 0,
-      summary: items[0]?.content?.slice(0, 220) ?? '',
-    }));
+    return Array.from(map.entries()).map(([documentId, items]) => {
+      const first = items[0];
+      const canAccess = items.some((item) => isAccessible(item));
+      return {
+        documentId,
+        fileName: first?.source_file_name ?? 'unknown',
+        fileType: first?.file_type ?? 'unknown',
+        updatedAt: first?.updated_at ?? '-',
+        items,
+        canAccess,
+        needApply: items.some((item) => item.need_apply),
+        accessReason: first?.access_reason,
+        bestScore: first?.score ?? 0,
+        summary: canAccess ? items.find((item) => item.content)?.content?.slice(0, 220) ?? '' : '',
+      };
+    });
   }, [searchResults]);
+
+  const openRequestDialog = (target: AccessRequestTarget) => {
+    setRequestTarget(target);
+    setRequestReason(target.reason || '需要查阅该文档以完成当前工作。');
+    setBusinessPurpose('');
+    setExpectedDuration('7天');
+  };
 
   return (
     <div className="space-y-6">
       <Card className="border-slate-200 bg-white shadow-sm">
         <CardHeader className="border-b border-slate-100 pb-4">
           <CardTitle className="flex items-center gap-2 text-base text-slate-950"><Sparkles size={16} /> 知识检索</CardTitle>
-          <CardDescription className="text-slate-700">先检索再定位文档内容，适合快速找到相关知识片段。</CardDescription>
+          <CardDescription className="text-slate-700">先检索再定位文档内容。无权限的命中文档会展示来源，但不会泄露正文。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
@@ -183,7 +298,7 @@ export default function DocumentsPage() {
                     setSearchLoading(false);
                   }
                 }}
-                disabled={!searchQuery || searchLoading}
+                disabled={!searchQuery.trim() || searchLoading}
               >
                 {searchLoading ? '检索中...' : '开始检索'}
               </Button>
@@ -207,30 +322,45 @@ export default function DocumentsPage() {
           </div>
 
           {groupedSearchResults.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">还没有检索结果。</div>
+            <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">还没有检索结果。</div>
           ) : (
             <div className="space-y-3">
               {groupedSearchResults.map((group) => (
-                <div key={group.documentId} className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div key={group.documentId} className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
                     <div className="min-w-0 space-y-1">
                       <div className="flex items-center gap-2 text-sm font-medium text-slate-950">
-                        <FileText size={16} className="text-slate-700" />
+                        {group.canAccess ? <FileText size={16} className="text-slate-700" /> : <LockKeyhole size={16} className="text-amber-600" />}
                         <span className="truncate">{group.fileName}</span>
+                        {group.canAccess ? (
+                          <Badge className="bg-emerald-50 text-emerald-700 hover:bg-emerald-50">可阅读</Badge>
+                        ) : (
+                          <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">需申请</Badge>
+                        )}
                       </div>
                       <div className="text-xs text-slate-600">类型：{group.fileType} · 更新：{group.updatedAt} · 命中 {group.items.length} 条</div>
-                      <div className="text-xs text-slate-600">文档 ID：{group.documentId}</div>
+                      {!group.canAccess && <div className="text-xs text-amber-700">{group.accessReason || '该文档受权限保护'}</div>}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">Score {group.bestScore.toFixed(4)}</Badge>
-                      <Button asChild variant="outline" className="rounded-full bg-white">
-                        <Link href={`/documents/${group.documentId}?highlight=${encodeURIComponent(searchQuery.trim())}`}>查看详情 <ArrowRight size={14} /></Link>
-                      </Button>
+                      {group.canAccess ? (
+                        <Button asChild variant="outline" className="rounded-full bg-white">
+                          <Link href={`/documents/${group.documentId}?highlight=${encodeURIComponent(searchQuery.trim())}`}>查看详情 <ArrowRight size={14} /></Link>
+                        </Button>
+                      ) : (
+                        <Button variant="outline" className="rounded-full bg-white" onClick={() => openRequestDialog({ document_id: group.documentId, file_name: group.fileName, reason: group.accessReason })}>
+                          申请访问 <Send size={14} />
+                        </Button>
+                      )}
                     </div>
                   </div>
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
                     <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">内容摘要</div>
-                    <p className="mt-2 text-sm leading-7 text-slate-900">{group.summary || '暂无可展示摘要'}</p>
+                    {group.canAccess ? (
+                      <p className="mt-2 text-sm leading-7 text-slate-900">{group.summary || '暂无可展示摘要'}</p>
+                    ) : (
+                      <p className="mt-2 text-sm leading-7 text-slate-700">该命中文档受权限保护。你可以提交访问申请，审核通过后再查看正文和原文。</p>
+                    )}
                   </div>
                 </div>
               ))}
@@ -245,7 +375,7 @@ export default function DocumentsPage() {
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <CardTitle className="text-base text-slate-950">知识文档</CardTitle>
-                <CardDescription className="text-slate-700">在这里查看最近上传的文档，并选择一个文档查看详情。</CardDescription>
+                <CardDescription className="text-slate-700">点击文档空白处更新右侧摘要；点击文档名或箭头进入详情，受限文档只能申请访问。</CardDescription>
               </div>
               <div className="flex items-center gap-2">
                 <div className="relative">
@@ -261,12 +391,13 @@ export default function DocumentsPage() {
           <CardContent className="p-0">
             {filteredDocuments.length === 0 ? (
               <div className="p-6">
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-sm text-slate-500">还没有文档。先上传一个文件开始使用。</div>
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-sm text-slate-500">还没有文档。先上传一个文件开始使用。</div>
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
                 {filteredDocuments.map((doc) => {
                   const active = selectedDocument?.document_id === doc.document_id;
+                  const canAccess = isAccessible(doc);
                   return (
                     <div
                       key={doc.document_id}
@@ -284,31 +415,57 @@ export default function DocumentsPage() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <Link
-                              href={`/documents/${doc.document_id}`}
-                              onClick={(event) => event.stopPropagation()}
-                              className="truncate text-sm font-medium text-slate-950 hover:text-blue-700"
-                            >
-                              {doc.file_name}
-                            </Link>
+                            {canAccess ? <ShieldCheck size={15} className="text-emerald-600" /> : <LockKeyhole size={15} className="text-amber-600" />}
+                            {canAccess ? (
+                              <Link
+                                href={`/documents/${doc.document_id}`}
+                                onClick={(event) => event.stopPropagation()}
+                                className="truncate text-sm font-medium text-slate-950 hover:text-blue-700"
+                              >
+                                {doc.file_name}
+                              </Link>
+                            ) : (
+                              <span className="truncate text-sm font-medium text-slate-950">{doc.file_name}</span>
+                            )}
                             <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{doc.parse_status}</Badge>
+                            {canAccess ? (
+                              <Badge className="bg-emerald-50 text-emerald-700 hover:bg-emerald-50">可阅读</Badge>
+                            ) : (
+                              <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">需申请</Badge>
+                            )}
                           </div>
                           <div className="mt-1 text-xs text-slate-600">{doc.document_id}</div>
                           <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
                             <span>类型：{doc.file_type}</span>
-                            <span>大小：{doc.file_size}</span>
-                            <span>可见性：{doc.visibility}</span>
+                            <span>大小：{formatSize(doc.file_size)}</span>
+                            <span>可见性：{doc.visibility_type || doc.visibility}</span>
+                            <span>等级：L{doc.min_permission_level ?? 1}</span>
                             <span>更新：{doc.updated_at ?? '-'}</span>
                           </div>
+                          {!canAccess && <div className="mt-2 text-xs text-amber-700">{doc.access_reason || '该文档受权限保护'}</div>}
                         </div>
-                        <Link
-                          href={`/documents/${doc.document_id}`}
-                          onClick={(event) => event.stopPropagation()}
-                          aria-label={`查看 ${doc.file_name} 详情`}
-                          className="mt-1 shrink-0 rounded-full p-2 text-slate-400 transition hover:bg-blue-50 hover:text-blue-700"
-                        >
-                          <ArrowRight size={16} />
-                        </Link>
+                        {canAccess ? (
+                          <Link
+                            href={`/documents/${doc.document_id}`}
+                            onClick={(event) => event.stopPropagation()}
+                            aria-label={`查看 ${doc.file_name} 详情`}
+                            className="mt-1 shrink-0 rounded-full p-2 text-slate-400 transition hover:bg-blue-50 hover:text-blue-700"
+                          >
+                            <ArrowRight size={16} />
+                          </Link>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-1 shrink-0"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openRequestDialog({ document_id: doc.document_id, file_name: doc.file_name, reason: doc.access_reason });
+                            }}
+                          >
+                            申请
+                          </Button>
+                        )}
                       </div>
                     </div>
                   );
@@ -322,12 +479,12 @@ export default function DocumentsPage() {
           <Card className="border-slate-200 bg-white shadow-sm">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base text-slate-950"><UploadCloud size={16} /> 上传文档</CardTitle>
-              <CardDescription className="text-slate-700">选择一个文件后上传，系统会自动解析。</CardDescription>
+              <CardDescription className="text-slate-700">选择文件后上传，系统会自动解析并进入知识库。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <Input type="file" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.csv,.xlsx,.xls" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
               <div className="flex flex-wrap items-center gap-2">
-                <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{selectedFile ? MULTIMODAL_HINTS[selectedFile.name.split('.').pop()?.toLowerCase() || ''] || '未知类型' : '尚未选择文件'}</Badge>
+                <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">{selectedFile ? FILE_HINTS[selectedFile.name.split('.').pop()?.toLowerCase() || ''] || '未知类型' : '尚未选择文件'}</Badge>
                 <Button
                   onClick={async () => {
                     if (!selectedFile) {
@@ -358,7 +515,48 @@ export default function DocumentsPage() {
                   <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> 刷新列表
                 </Button>
               </div>
-              <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-600">图片和表格会尝试进行基础 OCR / 结构化抽取。上传成功后会自动进入知识库。</div>
+              <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-600">图片和表格会尝试进行基础 OCR / 结构化抽取。上传文档默认是私有文档，只有创建者和管理员可阅读。</div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-slate-200 bg-white shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base text-slate-950"><Clock3 size={16} /> 我的申请</CardTitle>
+              <CardDescription className="text-slate-700">查看文档访问申请的审核状态和管理员意见。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex justify-end">
+                <Button variant="outline" size="sm" onClick={() => void loadMyRequests()} disabled={myRequestsLoading}>
+                  <RefreshCw size={14} className={myRequestsLoading ? 'animate-spin' : ''} /> 刷新
+                </Button>
+              </div>
+              {myRequests.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-500">暂时没有访问申请。</div>
+              ) : (
+                <div className="space-y-3">
+                  {myRequests.slice(0, 5).map((item) => (
+                    <div key={item.request_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="min-w-0 truncate text-sm font-medium text-slate-950">{item.document_name || item.document_id}</div>
+                        <Badge className={accessStatusClass(item.status)}>{accessStatusLabel(item.status)}</Badge>
+                      </div>
+                      <div className="mt-2 text-xs text-slate-600">申请时间：{item.created_at || '-'}</div>
+                      <div className="mt-2 text-sm leading-6 text-slate-700">用途：{item.business_purpose}</div>
+                      {item.ai_suggestion && (
+                        <div className="mt-2 text-xs text-slate-600">AI 建议：{item.ai_suggestion} · 风险：{item.ai_risk_level || '-'}</div>
+                      )}
+                      {item.review_comment && (
+                        <div className="mt-2 rounded-lg bg-white p-3 text-sm text-slate-700">审核意见：{item.review_comment}</div>
+                      )}
+                      {item.status === 'approved' && (
+                        <Button asChild size="sm" variant="outline" className="mt-3">
+                          <Link href={`/documents/${item.document_id}`}>查看文档 <ArrowRight size={14} /></Link>
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -371,24 +569,38 @@ export default function DocumentsPage() {
               {selectedDocument ? (
                 <>
                   <div>
-                    <div className="text-base font-medium text-slate-950">{selectedDocument.file_name}</div>
+                    <div className="flex items-center gap-2 text-base font-medium text-slate-950">
+                      {isAccessible(selectedDocument) ? <ShieldCheck size={16} className="text-emerald-600" /> : <LockKeyhole size={16} className="text-amber-600" />}
+                      {selectedDocument.file_name}
+                    </div>
                     <div className="mt-1 text-xs text-slate-600">{selectedDocument.document_id}</div>
                   </div>
                   <div className="grid grid-cols-2 gap-3 text-sm text-slate-700">
-                    <div className="rounded-2xl bg-slate-50 p-3">类型：{selectedDocument.file_type}</div>
-                    <div className="rounded-2xl bg-slate-50 p-3">状态：{selectedDocument.parse_status}</div>
-                    <div className="rounded-2xl bg-slate-50 p-3">大小：{selectedDocument.file_size}</div>
-                    <div className="rounded-2xl bg-slate-50 p-3">可见性：{selectedDocument.visibility}</div>
+                    <div className="rounded-xl bg-slate-50 p-3">类型：{selectedDocument.file_type}</div>
+                    <div className="rounded-xl bg-slate-50 p-3">状态：{selectedDocument.parse_status}</div>
+                    <div className="rounded-xl bg-slate-50 p-3">大小：{formatSize(selectedDocument.file_size)}</div>
+                    <div className="rounded-xl bg-slate-50 p-3">权限：{isAccessible(selectedDocument) ? '可阅读' : '需申请'}</div>
                   </div>
+                  {!isAccessible(selectedDocument) && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                      {selectedDocument.access_reason || '该文档受权限保护。提交访问申请后，管理员审核通过即可查看正文。'}
+                    </div>
+                  )}
                   <div className="grid gap-2 sm:grid-cols-2">
-                    <Button asChild className="w-full" variant="outline">
-                      <Link href={`/documents/${selectedDocument.document_id}`}>查看详情 <ArrowRight size={14} /></Link>
-                    </Button>
+                    {isAccessible(selectedDocument) ? (
+                      <Button asChild className="w-full" variant="outline">
+                        <Link href={`/documents/${selectedDocument.document_id}`}>查看详情 <ArrowRight size={14} /></Link>
+                      </Button>
+                    ) : (
+                      <Button className="w-full" variant="outline" onClick={() => openRequestDialog({ document_id: selectedDocument.document_id, file_name: selectedDocument.file_name, reason: selectedDocument.access_reason })}>
+                        申请访问 <Send size={14} />
+                      </Button>
+                    )}
                     <Button
                       variant="destructive"
                       className="w-full"
                       onClick={async () => {
-                        const ok = confirm(`确定删除文档「${selectedDocument.file_name}」吗？此操作不可恢复。`);
+                        const ok = confirm(`确定删除文档“${selectedDocument.file_name}”吗？此操作不可恢复。`);
                         if (!ok) return;
                         try {
                           const res = await authedFetch(`${API_BASE}/api/v1/documents/${selectedDocument.document_id}`, { method: 'DELETE' });
@@ -408,12 +620,62 @@ export default function DocumentsPage() {
                   </div>
                 </>
               ) : (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">请选择左侧一条文档查看摘要。</div>
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">请选择左侧一条文档查看摘要。</div>
               )}
             </CardContent>
           </Card>
         </div>
       </div>
+
+      {requestTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+          <div className="w-full max-w-xl rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold text-slate-950">申请访问文档</div>
+                <div className="mt-1 text-sm text-slate-600">{requestTarget.file_name}</div>
+              </div>
+              <Button variant="ghost" onClick={() => setRequestTarget(null)}>关闭</Button>
+            </div>
+            <div className="mt-5 space-y-4">
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">申请原因</div>
+                <Textarea value={requestReason} onChange={(event) => setRequestReason(event.target.value)} className="bg-white text-slate-900 placeholder:text-slate-400" />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">业务用途</div>
+                <Textarea value={businessPurpose} onChange={(event) => setBusinessPurpose(event.target.value)} placeholder="例如：处理 VPN 申请咨询、完善部门知识库、排查员工问题等" className="bg-white text-slate-900 placeholder:text-slate-400" />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">预计使用时长</div>
+                <Input value={expectedDuration} onChange={(event) => setExpectedDuration(event.target.value)} placeholder="例如：7天、30天、长期" />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setRequestTarget(null)}>取消</Button>
+                <Button
+                  disabled={requestSubmitting || !requestReason.trim() || !businessPurpose.trim()}
+                  onClick={async () => {
+                    if (!requestTarget) return;
+                    try {
+                      setRequestSubmitting(true);
+                      await submitAccessRequest(requestTarget, requestReason.trim(), businessPurpose.trim(), expectedDuration.trim());
+                      await loadMyRequests();
+                      alert('访问申请已提交，等待管理员审核。');
+                      setRequestTarget(null);
+                    } catch (error) {
+                      alert(error instanceof Error ? error.message : '提交访问申请失败');
+                    } finally {
+                      setRequestSubmitting(false);
+                    }
+                  }}
+                >
+                  {requestSubmitting ? '提交中...' : '提交申请'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

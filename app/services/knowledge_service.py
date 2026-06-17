@@ -34,6 +34,10 @@ settings = get_settings()
 class SearchHit:
     chunk: DocumentChunk
     score: float
+    content: str | None = None
+    can_access: bool = True
+    need_apply: bool = False
+    access_reason: str | None = None
 
 
 class KnowledgeService:
@@ -73,7 +77,16 @@ class KnowledgeService:
             chunk = self.db.get(DocumentChunk, item["chunk_id"])
             if chunk is None:
                 continue
-            hits.append(SearchHit(chunk=chunk, score=float(item.get("score") or 0.0)))
+            hits.append(
+                SearchHit(
+                    chunk=chunk,
+                    score=float(item.get("score") or 0.0),
+                    content=item.get("content"),
+                    can_access=bool(item.get("can_access", True)),
+                    need_apply=bool(item.get("need_apply", False)),
+                    access_reason=item.get("access_reason"),
+                )
+            )
         return hits
 
     def list_tasks(self, status: str | None = None) -> list[TaskRecord]:

@@ -5,35 +5,32 @@ import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ShieldCheck, Sparkles } from 'lucide-react';
+import { Building2, LockKeyhole, ShieldCheck } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
 
-type AuthPayload = { access_token: string; username: string; display_name: string; roles: string[] };
+type AuthPayload = {
+  access_token: string;
+  username: string;
+  employee_no?: string | null;
+  display_name: string;
+  department?: string | null;
+  position?: string | null;
+  permission_level: number;
+  is_first_login: boolean;
+  status: string;
+  roles: string[];
+};
 
-async function login(username: string, password: string) {
+async function login(account: string, password: string) {
   const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ employee_no: account, password }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(text || '登录失败');
-  }
-  const json = await res.json();
-  return json.data as AuthPayload;
-}
-
-async function register(username: string, password: string, displayName: string, email: string) {
-  const res = await fetch(`${API_BASE}/api/v1/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, display_name: displayName, email: email || undefined }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(text || '注册失败');
+    throw new Error(text || '登录失败，请检查账号或密码');
   }
   const json = await res.json();
   return json.data as AuthPayload;
@@ -41,56 +38,85 @@ async function register(username: string, password: string, displayName: string,
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('admin');
+  const [account, setAccount] = useState('admin');
   const [password, setPassword] = useState('123456');
-  const [displayName, setDisplayName] = useState('');
-  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-md items-center px-4">
-      <Card className="w-full">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2"><ShieldCheck size={18} /> {mode === 'login' ? '登录系统' : '注册账号'}</CardTitle>
-          <CardDescription>{mode === 'login' ? '已有账号请直接登录进入系统。' : '注册后即可直接使用知识库与问答能力。'}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {mode === 'register' ? (
-            <>
-              <Input placeholder="昵称 / 显示名称" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-              <Input placeholder="邮箱（可选）" value={email} onChange={(e) => setEmail(e.target.value)} />
-            </>
-          ) : null}
-          <Input placeholder="用户名" value={username} onChange={(e) => setUsername(e.target.value)} />
-          <Input placeholder="密码" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <Button
-            className="w-full"
-            disabled={loading || (mode === 'register' && (!displayName || !username || !password))}
-            onClick={async () => {
-              try {
-                setLoading(true);
-                const result = mode === 'login'
-                  ? await login(username, password)
-                  : await register(username, password, displayName, email);
-                localStorage.setItem('kb_token', result.access_token);
-                localStorage.setItem('kb_user', JSON.stringify(result));
-                router.push('/');
-              } catch (error) {
-                alert(error instanceof Error ? error.message : (mode === 'login' ? '登录失败' : '注册失败'));
-              } finally {
-                setLoading(false);
-              }
-            }}
-          >
-            {loading ? (mode === 'login' ? '登录中...' : '注册中...') : (mode === 'login' ? '登录' : '注册并进入系统')}
-          </Button>
-          <button type="button" className="w-full text-sm text-blue-600" onClick={() => setMode((v) => (v === 'login' ? 'register' : 'login'))}>
-            {mode === 'login' ? '没有账号？去注册' : '已有账号？去登录'}
-          </button>
-          <div className="flex items-center gap-2 text-xs text-muted"><Sparkles size={14} /> 登录或注册后即可访问知识库、Agent 与问答能力。</div>
-        </CardContent>
-      </Card>
-    </div>
+    <main className="min-h-screen bg-slate-950 text-white">
+      <div className="mx-auto grid min-h-screen max-w-6xl gap-8 px-6 py-10 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
+        <section className="space-y-8">
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm text-blue-100">
+            <Building2 size={16} />
+            企业内部知识管理平台
+          </div>
+          <div className="space-y-4">
+            <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">让企业知识被安全地生产、流转和复用</h1>
+            <p className="max-w-xl text-base leading-7 text-slate-300">
+              平台面向企业内部员工开放。请使用企业工号或管理员账号登录，首次登录需要完成密码修改。
+            </p>
+          </div>
+          <div className="grid gap-3 text-sm text-slate-300 md:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">员工身份认证</div>
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">首次登录改密</div>
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">角色与权限审计</div>
+          </div>
+        </section>
+
+        <Card className="border-white/10 bg-white text-slate-950 shadow-2xl">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-xl text-slate-950">
+              <ShieldCheck size={20} />
+              企业账号登录
+            </CardTitle>
+            <CardDescription className="text-slate-600">生产环境不开放自助注册，由管理员分配账号。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-800">工号 / 管理员账号</label>
+              <Input value={account} onChange={(e) => setAccount(e.target.value.trim())} placeholder="例如 admin 或 E1001" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-800">密码</label>
+              <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="请输入密码" />
+            </div>
+
+            {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+
+            <Button
+              className="w-full"
+              disabled={loading || !account || !password}
+              onClick={async () => {
+                try {
+                  setLoading(true);
+                  setError('');
+                  const result = await login(account, password);
+                  localStorage.setItem('kb_token', result.access_token);
+                  localStorage.setItem('kb_user', JSON.stringify(result));
+                  router.replace(result.is_first_login ? '/change-password' : '/');
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : '登录失败，请稍后重试');
+                } finally {
+                  setLoading(false);
+                }
+              }}
+            >
+              {loading ? '登录中...' : '登录'}
+            </Button>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-700">
+              <div className="flex items-center gap-2 font-medium text-slate-900">
+                <LockKeyhole size={14} />
+                演示账号
+              </div>
+              <div className="mt-2">管理员：admin / 初始密码 123456</div>
+              <div>普通员工：E1001 / 初始密码 654321</div>
+              <div className="mt-2 text-slate-500">首次登录后必须修改密码，才能进入系统首页。</div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </main>
   );
 }

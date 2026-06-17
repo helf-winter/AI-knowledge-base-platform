@@ -1,7 +1,9 @@
 param(
     [int]$BackendPort = 8000,
     [int]$FrontendPort = 3000,
+    [string]$CondaEnv = "knowledge-base",
     [switch]$SkipInstall,
+    [switch]$InstallDeps,
     [switch]$NoBrowser
 )
 
@@ -34,12 +36,15 @@ function Wait-Http($Url, $Name) {
     Write-Warning "$Name is not ready yet. Check the service terminal logs."
 }
 
-if (-not (Test-Command "python")) {
-    throw "python was not found. Please install Python 3.10+ and add it to PATH."
+if (-not (Test-Command "conda")) {
+    throw "conda was not found. Please install Miniconda/Anaconda and add conda to PATH."
 }
 if (-not (Test-Command "npm")) {
     throw "npm was not found. Please install Node.js 18+."
 }
+
+Write-Host "Using conda environment: $CondaEnv"
+conda run -n $CondaEnv python --version | Out-Host
 
 $FrontendEnv = Join-Path $FrontendDir ".env.local"
 if (-not (Test-Path $FrontendEnv)) {
@@ -47,9 +52,9 @@ if (-not (Test-Path $FrontendEnv)) {
     Write-Host "Created frontend/.env.local"
 }
 
-if (-not $SkipInstall) {
+if ($InstallDeps) {
     Write-Host "Installing backend dependencies..."
-    python -m pip install -r (Join-Path $Root "requirements.txt")
+    conda run -n $CondaEnv python -m pip install -r (Join-Path $Root "requirements.txt")
 
     if (-not (Test-Path (Join-Path $FrontendDir "node_modules"))) {
         Write-Host "Installing frontend dependencies..."
@@ -57,6 +62,8 @@ if (-not $SkipInstall) {
         npm install
         Pop-Location
     }
+} else {
+    Write-Host "Skipping dependency installation. Use -InstallDeps only when dependencies changed."
 }
 
 if (Test-PortInUse $BackendPort) {
@@ -67,7 +74,7 @@ if (Test-PortInUse $BackendPort) {
         "-NoExit",
         "-ExecutionPolicy", "Bypass",
         "-Command",
-        "cd '$Root'; python -m uvicorn app.main:app --host 127.0.0.1 --port $BackendPort --reload"
+        "cd '$Root'; conda run -n '$CondaEnv' python -m uvicorn app.main:app --host 127.0.0.1 --port $BackendPort --reload"
     ) | Out-Null
 }
 
@@ -91,6 +98,7 @@ Write-Host "Started successfully."
 Write-Host "  Frontend: $FrontendUrl"
 Write-Host "  Backend:  $ApiBase"
 Write-Host "  Default account: admin / 123456"
+Write-Host "  Backend conda env: $CondaEnv"
 
 if (-not $NoBrowser) {
     Start-Process $FrontendUrl | Out-Null

@@ -2,14 +2,38 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
+import { ArrowRight, Bot, CheckCircle2, FileText, ListChecks, PencilLine, PlusCircle, RefreshCw, ShieldCheck, XCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { ArrowRight, PencilLine, PlusCircle, RefreshCw, ShieldCheck, ListChecks } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
+
+type AccessRequest = {
+  request_id: string;
+  user_id: string;
+  document_id: string;
+  applicant_name?: string | null;
+  applicant_employee_no?: string | null;
+  applicant_department?: string | null;
+  applicant_permission_level?: number | null;
+  document_name?: string | null;
+  document_security_level?: string | null;
+  document_min_permission_level?: number | null;
+  reason: string;
+  business_purpose: string;
+  expected_duration?: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  ai_suggestion?: string | null;
+  ai_risk_level?: string | null;
+  ai_reason?: string | null;
+  reviewed_by?: string | null;
+  review_comment?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string | null;
+};
 
 type KnowledgeMetadata = {
   knowledge_id: string;
@@ -36,6 +60,37 @@ async function authedFetch(url: string, init?: RequestInit) {
   return fetch(url, { ...init, headers });
 }
 
+async function fetchAccessRequests(status: string) {
+  const url = new URL(`${API_BASE}/api/v1/admin/access-requests`);
+  if (status) url.searchParams.set('status', status);
+  const res = await authedFetch(url.toString());
+  if (!res.ok) throw new Error(res.status === 403 ? '当前账号无权访问管理员审核页面' : '加载权限申请失败');
+  const json = await res.json();
+  return (json.data ?? []) as AccessRequest[];
+}
+
+async function runAiReview(requestId: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/access-requests/${requestId}/ai-review`, { method: 'POST' });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || 'AI 辅助审核失败');
+  }
+  return res.json();
+}
+
+async function reviewAccessRequest(requestId: string, approve: boolean, reviewComment: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/access-requests/${requestId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approve, review_comment: reviewComment || null }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '提交审核结果失败');
+  }
+  return res.json();
+}
+
 async function fetchMetadata(status?: string, documentId?: string) {
   const url = new URL(`${API_BASE}/api/v1/admin/knowledge-metadata`);
   if (status) url.searchParams.set('status', status);
@@ -43,7 +98,7 @@ async function fetchMetadata(status?: string, documentId?: string) {
   const res = await authedFetch(url.toString());
   if (!res.ok) throw new Error('加载知识条目失败');
   const json = await res.json();
-  return json.data as KnowledgeMetadata[];
+  return (json.data ?? []) as KnowledgeMetadata[];
 }
 
 async function createMetadata(payload: Partial<KnowledgeMetadata> & { document_id: string; title: string; knowledge_type: string }) {
@@ -73,9 +128,7 @@ async function updateMetadata(knowledgeId: string, payload: Partial<KnowledgeMet
 }
 
 async function reviewMetadata(knowledgeId: string, approve: boolean) {
-  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}/review?approve=${approve}`, {
-    method: 'POST',
-  });
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata/${knowledgeId}/review?approve=${approve}`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '审核失败');
@@ -101,7 +154,33 @@ async function deleteMetadata(knowledgeId: string) {
   return res.json();
 }
 
+function statusLabel(status: string) {
+  return status === 'approved' ? '已通过' : status === 'rejected' ? '已拒绝' : status === '待审核' ? '待审核' : status;
+}
+
+function suggestionLabel(suggestion?: string | null) {
+  if (suggestion === 'approve') return '建议通过';
+  if (suggestion === 'reject') return '建议拒绝';
+  if (suggestion === 'review') return '建议人工复核';
+  return '尚未生成';
+}
+
+function riskClass(level?: string | null) {
+  if (level === 'high') return 'bg-red-50 text-red-700 hover:bg-red-50';
+  if (level === 'medium') return 'bg-amber-50 text-amber-700 hover:bg-amber-50';
+  if (level === 'low') return 'bg-emerald-50 text-emerald-700 hover:bg-emerald-50';
+  return 'bg-slate-100 text-slate-700 hover:bg-slate-100';
+}
+
 export default function AdminPage() {
+  const [requests, setRequests] = useState<AccessRequest[]>([]);
+  const [requestStatus, setRequestStatus] = useState('pending');
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const [requestLoading, setRequestLoading] = useState(false);
+  const [aiLoadingId, setAiLoadingId] = useState<string | null>(null);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [reviewComment, setReviewComment] = useState('');
+
   const [items, setItems] = useState<KnowledgeMetadata[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('');
@@ -109,9 +188,23 @@ export default function AdminPage() {
   const [draft, setDraft] = useState({ document_id: '', title: '', author: '', knowledge_type: 'policy', version: 'v1.0.0', status: 'reviewing', source_type: 'upload', acl_json: '' });
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  const selectedRequest = useMemo(() => requests.find((item) => item.request_id === selectedRequestId) ?? requests[0] ?? null, [requests, selectedRequestId]);
   const filtered = useMemo(() => items.filter((item) => !filter || item.status === filter), [items, filter]);
 
-  const load = async () => {
+  const loadRequests = async () => {
+    setRequestLoading(true);
+    try {
+      const data = await fetchAccessRequests(requestStatus);
+      setRequests(data);
+      setSelectedRequestId(data[0]?.request_id ?? null);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '加载权限申请失败');
+    } finally {
+      setRequestLoading(false);
+    }
+  };
+
+  const loadMetadata = async () => {
     setLoading(true);
     try {
       setItems(await fetchMetadata(filter || undefined, documentFilter || undefined));
@@ -122,10 +215,177 @@ export default function AdminPage() {
     }
   };
 
-  useEffect(() => { void load(); }, [filter, documentFilter]);
+  useEffect(() => { void loadRequests(); }, [requestStatus]);
+  useEffect(() => { void loadMetadata(); }, [filter, documentFilter]);
 
   return (
     <div className="space-y-6">
+      <section className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100 pb-4">
+            <CardTitle className="flex items-center gap-2 text-base text-slate-900"><ShieldCheck size={16} /> 权限申请审核</CardTitle>
+            <CardDescription className="text-slate-700">AI 只提供建议，管理员需要手动选择通过或拒绝。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            <div className="flex flex-wrap gap-2">
+              {['pending', 'approved', 'rejected'].map((item) => (
+                <Button key={item} size="sm" variant={requestStatus === item ? 'default' : 'outline'} onClick={() => setRequestStatus(item)}>
+                  {statusLabel(item)}
+                </Button>
+              ))}
+              <Button variant="outline" size="sm" onClick={() => void loadRequests()} disabled={requestLoading}>
+                <RefreshCw size={14} className={requestLoading ? 'animate-spin' : ''} /> 刷新
+              </Button>
+            </div>
+
+            {requests.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">当前状态下暂无申请。</div>
+            ) : (
+              <div className="space-y-3">
+                {requests.map((item) => (
+                  <button
+                    key={item.request_id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedRequestId(item.request_id);
+                      setReviewComment(item.review_comment || '');
+                    }}
+                    className={`w-full rounded-xl border p-4 text-left transition ${selectedRequest?.request_id === item.request_id ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'}`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-slate-950">{item.document_name || item.document_id}</div>
+                        <div className="mt-1 text-xs text-slate-600">{item.applicant_name || item.user_id} · {item.applicant_employee_no || '-'}</div>
+                      </div>
+                      <Badge className="bg-white text-slate-700 hover:bg-white">{statusLabel(item.status)}</Badge>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
+                      <span>部门：{item.applicant_department || '-'}</span>
+                      <span>用户等级：L{item.applicant_permission_level ?? '-'}</span>
+                      <span>文档等级：L{item.document_min_permission_level ?? '-'}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100 pb-4">
+            <CardTitle className="flex items-center gap-2 text-base text-slate-900"><FileText size={16} /> 申请详情</CardTitle>
+            <CardDescription className="text-slate-700">查看申请人与文档信息，生成 AI 建议后再人工审核。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            {selectedRequest ? (
+              <>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">申请人：{selectedRequest.applicant_name || '-'}（{selectedRequest.applicant_employee_no || '-'}）</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">部门：{selectedRequest.applicant_department || '-'}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">用户等级：L{selectedRequest.applicant_permission_level ?? '-'}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">状态：{statusLabel(selectedRequest.status)}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700 md:col-span-2">文档：{selectedRequest.document_name || selectedRequest.document_id}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">安全等级：{selectedRequest.document_security_level || '-'}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">文档要求：L{selectedRequest.document_min_permission_level ?? '-'}</div>
+                </div>
+
+                <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+                  <div>
+                    <div className="text-xs font-medium text-slate-500">申请原因</div>
+                    <p className="mt-1 text-sm leading-7 text-slate-900">{selectedRequest.reason}</p>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-slate-500">业务用途</div>
+                    <p className="mt-1 text-sm leading-7 text-slate-900">{selectedRequest.business_purpose}</p>
+                  </div>
+                  <div className="text-sm text-slate-700">预计使用时长：{selectedRequest.expected_duration || '-'}</div>
+                </div>
+
+                <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-slate-950"><Bot size={16} /> AI 辅助审核</div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={aiLoadingId === selectedRequest.request_id}
+                      onClick={async () => {
+                        try {
+                          setAiLoadingId(selectedRequest.request_id);
+                          await runAiReview(selectedRequest.request_id);
+                          await loadRequests();
+                        } catch (error) {
+                          alert(error instanceof Error ? error.message : 'AI 辅助审核失败');
+                        } finally {
+                          setAiLoadingId(null);
+                        }
+                      }}
+                    >
+                      {aiLoadingId === selectedRequest.request_id ? '生成中...' : '生成 / 更新建议'}
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge className="bg-white text-slate-700 hover:bg-white">{suggestionLabel(selectedRequest.ai_suggestion)}</Badge>
+                    <Badge className={riskClass(selectedRequest.ai_risk_level)}>风险：{selectedRequest.ai_risk_level || '-'}</Badge>
+                  </div>
+                  <p className="text-sm leading-7 text-slate-700">{selectedRequest.ai_reason || '尚未生成 AI 建议。DeepSeek 不可用时，系统会使用规则 fallback 生成建议。'}</p>
+                </div>
+
+                <div className="space-y-3">
+                  <Textarea value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder="填写审核意见，例如：通过原因或拒绝原因" className="bg-white text-slate-900 placeholder:text-slate-400" />
+                  <div className="flex flex-wrap gap-2">
+                    <Button asChild variant="outline">
+                      <Link href={`/documents/${selectedRequest.document_id}`}>
+                        <ArrowRight size={14} /> 查看文档
+                      </Link>
+                    </Button>
+                    <Button
+                      disabled={selectedRequest.status !== 'pending' || reviewingId === selectedRequest.request_id}
+                      onClick={async () => {
+                        try {
+                          setReviewingId(selectedRequest.request_id);
+                          await reviewAccessRequest(selectedRequest.request_id, true, reviewComment);
+                          await loadRequests();
+                        } catch (error) {
+                          alert(error instanceof Error ? error.message : '通过失败');
+                        } finally {
+                          setReviewingId(null);
+                        }
+                      }}
+                    >
+                      <CheckCircle2 size={14} /> 通过
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      disabled={selectedRequest.status !== 'pending' || reviewingId === selectedRequest.request_id}
+                      onClick={async () => {
+                        try {
+                          setReviewingId(selectedRequest.request_id);
+                          await reviewAccessRequest(selectedRequest.request_id, false, reviewComment);
+                          await loadRequests();
+                        } catch (error) {
+                          alert(error instanceof Error ? error.message : '拒绝失败');
+                        } finally {
+                          setReviewingId(null);
+                        }
+                      }}
+                    >
+                      <XCircle size={14} /> 拒绝
+                    </Button>
+                  </div>
+                  {selectedRequest.status !== 'pending' && (
+                    <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+                      已审核：{selectedRequest.reviewed_at || '-'}；意见：{selectedRequest.review_comment || '-'}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">请选择左侧申请查看详情。</div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
       <section className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <Card className="border-slate-200 bg-white shadow-sm">
           <CardHeader className="border-b border-slate-100 pb-4">
@@ -140,7 +400,7 @@ export default function AdminPage() {
               <Input placeholder="知识类型" value={draft.knowledge_type} onChange={(e) => setDraft((c) => ({ ...c, knowledge_type: e.target.value }))} />
               <Input placeholder="版本" value={draft.version} onChange={(e) => setDraft((c) => ({ ...c, version: e.target.value }))} />
               <Input placeholder="来源类型" value={draft.source_type} onChange={(e) => setDraft((c) => ({ ...c, source_type: e.target.value }))} />
-              <Textarea placeholder="ACL JSON" value={draft.acl_json} onChange={(e) => setDraft((c) => ({ ...c, acl_json: e.target.value }))} />
+              <Textarea placeholder="ACL JSON" value={draft.acl_json} onChange={(e) => setDraft((c) => ({ ...c, acl_json: e.target.value }))} className="bg-white text-slate-900 placeholder:text-slate-400" />
             </div>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -152,7 +412,7 @@ export default function AdminPage() {
                       await createMetadata({ ...draft, author: draft.author || null, acl_json: draft.acl_json || null });
                     }
                     setEditingId(null);
-                    await load();
+                    await loadMetadata();
                   } catch (error) {
                     alert(error instanceof Error ? error.message : '保存失败');
                   }
@@ -163,7 +423,7 @@ export default function AdminPage() {
               <Button variant="outline" onClick={() => { setEditingId(null); setDraft({ document_id: '', title: '', author: '', knowledge_type: 'policy', version: 'v1.0.0', status: 'reviewing', source_type: 'upload', acl_json: '' }); }}>
                 重置
               </Button>
-              <Button variant="outline" onClick={() => void load()} disabled={loading}>
+              <Button variant="outline" onClick={() => void loadMetadata()} disabled={loading}>
                 <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> 刷新
               </Button>
             </div>
@@ -173,7 +433,7 @@ export default function AdminPage() {
         <Card className="border-slate-200 bg-white shadow-sm">
           <CardHeader className="border-b border-slate-100 pb-4">
             <CardTitle className="flex items-center gap-2 text-base text-slate-900"><ListChecks size={16} /> 知识条目列表</CardTitle>
-            <CardDescription className="text-slate-700">查看、筛选和处理条目。</CardDescription>
+            <CardDescription className="text-slate-700">查看、筛选和处理知识条目。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 pt-4">
             <div className="grid gap-3 md:grid-cols-[1fr_auto]">
@@ -188,12 +448,10 @@ export default function AdminPage() {
             </div>
 
             {filtered.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-                还没有知识条目。
-              </div>
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">还没有知识条目。</div>
             ) : (
               filtered.map((item) => (
-                <div key={item.knowledge_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                <div key={item.knowledge_id} className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <div className="font-medium text-slate-900">{item.title}</div>
@@ -207,7 +465,7 @@ export default function AdminPage() {
                     <div>来源：{item.source_type}</div>
                     <div>作者：{item.author || '-'}</div>
                   </div>
-                  <div className="text-xs text-slate-500 break-all">ACL：{item.acl_json || '-'}</div>
+                  <div className="break-all text-xs text-slate-500">ACL：{item.acl_json || '-'}</div>
                   <div className="flex flex-wrap gap-2">
                     <Button
                       size="sm"
@@ -233,13 +491,13 @@ export default function AdminPage() {
                         <ArrowRight size={14} /> 文档详情
                       </Link>
                     </Button>
-                    <Button size="sm" onClick={async () => { try { await reviewMetadata(item.knowledge_id, true); await load(); } catch (error) { alert(error instanceof Error ? error.message : '审核失败'); } }}>
+                    <Button size="sm" onClick={async () => { try { await reviewMetadata(item.knowledge_id, true); await loadMetadata(); } catch (error) { alert(error instanceof Error ? error.message : '审核失败'); } }}>
                       <ShieldCheck size={14} /> 通过
                     </Button>
-                    <Button size="sm" variant="outline" onClick={async () => { try { await archiveMetadata(item.knowledge_id); await load(); } catch (error) { alert(error instanceof Error ? error.message : '归档失败'); } }}>
+                    <Button size="sm" variant="outline" onClick={async () => { try { await archiveMetadata(item.knowledge_id); await loadMetadata(); } catch (error) { alert(error instanceof Error ? error.message : '归档失败'); } }}>
                       归档
                     </Button>
-                    <Button size="sm" variant="destructive" onClick={async () => { try { await deleteMetadata(item.knowledge_id); await load(); } catch (error) { alert(error instanceof Error ? error.message : '删除失败'); } }}>
+                    <Button size="sm" variant="destructive" onClick={async () => { try { await deleteMetadata(item.knowledge_id); await loadMetadata(); } catch (error) { alert(error instanceof Error ? error.message : '删除失败'); } }}>
                       删除
                     </Button>
                   </div>

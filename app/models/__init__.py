@@ -11,7 +11,7 @@ from app.models.core import (
     User,
     UserRole,
 )
-from app.models.document import Document, DocumentChunk, Feedback
+from app.models.document import AccessRequest, Document, DocumentAccessGrant, DocumentChunk, Feedback
 from app.models.vector import ChunkEmbedding
 
 __all__ = [
@@ -20,7 +20,9 @@ __all__ = [
     "ChunkEmbedding",
     "Department",
     "Document",
+    "DocumentAccessGrant",
     "DocumentChunk",
+    "AccessRequest",
     "DocumentTag",
     "Feedback",
     "KnowledgeMetadata",

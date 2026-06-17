@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { FloatingAssistant } from './floating-assistant';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000';
+const FULLSCREEN_PATHS = ['/login', '/change-password'];
 
 const primaryNavItems = [
   { href: '/', label: '首页仪表盘', icon: Home },
@@ -24,6 +25,10 @@ const supportNavItems = [
 type UserInfo = {
   display_name?: string;
   username?: string;
+  employee_no?: string | null;
+  department?: string | null;
+  position?: string | null;
+  is_first_login?: boolean;
   roles?: string[];
 };
 
@@ -33,6 +38,7 @@ export function SidebarShell({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserInfo | null>(null);
 
   useEffect(() => {
+    if (FULLSCREEN_PATHS.includes(pathname)) return;
     let cancelled = false;
 
     async function loadCurrentUser() {
@@ -53,9 +59,7 @@ export function SidebarShell({ children }: { children: ReactNode }) {
           localStorage.removeItem('kb_token');
           localStorage.removeItem('kb_user');
           setUser(null);
-          if (pathname !== '/login') {
-            router.replace('/login');
-          }
+          router.replace('/login');
           return;
         }
 
@@ -64,6 +68,9 @@ export function SidebarShell({ children }: { children: ReactNode }) {
         if (!cancelled) {
           setUser(current);
           localStorage.setItem('kb_user', JSON.stringify(current));
+          if (current.is_first_login) {
+            router.replace('/change-password');
+          }
         }
       } catch {
         if (!cancelled) {
@@ -78,6 +85,10 @@ export function SidebarShell({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [pathname, router]);
+
+  if (FULLSCREEN_PATHS.includes(pathname)) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="min-h-screen bg-[#f5f6fa] text-slate-950">
@@ -134,15 +145,14 @@ export function SidebarShell({ children }: { children: ReactNode }) {
               })}
             </div>
           </nav>
-
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 items-center justify-end border-b border-slate-200 bg-white px-4 md:px-6">
             <div className="flex items-center gap-3 rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-500">
               <div className="leading-5">
-                <div className="text-slate-950">{user?.display_name || user?.username || '未登录'}</div>
-                <div>{user?.roles?.join('、') || 'no roles'}</div>
+                <div className="text-slate-950">{user?.display_name || user?.employee_no || user?.username || '未登录'}</div>
+                <div>{[user?.department, user?.position].filter(Boolean).join(' / ') || user?.roles?.join('、') || 'no roles'}</div>
               </div>
               <button
                 type="button"
