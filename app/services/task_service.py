@@ -18,6 +18,10 @@ class TaskService:
             task_type=task_type,
             related_document_id=related_document_id,
             status="pending",
+            stage="queued",
+            progress_current=0,
+            progress_total=0,
+            detail=None,
             retry_count=0,
             error_message=None,
         )
@@ -29,6 +33,28 @@ class TaskService:
     def mark_running(self, task_id: str) -> TaskRecord:
         task = self._get_task(task_id)
         task.status = "running"
+        task.stage = task.stage or "running"
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
+    def mark_queued(self, task_id: str, detail: str | None = None) -> TaskRecord:
+        task = self._get_task(task_id)
+        task.status = "queued"
+        task.stage = "queued"
+        task.detail = detail
+        task.error_message = None
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
+    def mark_progress(self, task_id: str, stage: str, current: int = 0, total: int = 0, detail: str | None = None) -> TaskRecord:
+        task = self._get_task(task_id)
+        task.status = "running"
+        task.stage = stage
+        task.progress_current = max(0, int(current or 0))
+        task.progress_total = max(0, int(total or 0))
+        task.detail = detail
         self.db.commit()
         self.db.refresh(task)
         return task
@@ -36,6 +62,9 @@ class TaskService:
     def mark_succeeded(self, task_id: str) -> TaskRecord:
         task = self._get_task(task_id)
         task.status = "succeeded"
+        task.stage = "completed"
+        if task.progress_total:
+            task.progress_current = task.progress_total
         task.error_message = None
         self.db.commit()
         self.db.refresh(task)
@@ -44,6 +73,7 @@ class TaskService:
     def mark_failed(self, task_id: str, error_message: str) -> TaskRecord:
         task = self._get_task(task_id)
         task.status = "failed"
+        task.stage = "failed"
         task.error_message = error_message
         task.retry_count += 1
         self.db.commit()
@@ -56,7 +86,8 @@ class TaskService:
             raise ValidationAppError("任务未关联文档，无法重跑")
         if task.status == "running":
             raise ValidationAppError("任务正在执行中，不能重复重跑")
-        task.status = "pending"
+        task.status = "queued"
+        task.stage = "queued"
         task.error_message = None
         task.retry_count += 1
         self.db.commit()

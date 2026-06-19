@@ -100,6 +100,21 @@ type MyPublishRequest = {
   created_at?: string | null;
 };
 
+type TaskItem = {
+  task_id: string;
+  task_type: string;
+  related_document_id?: string | null;
+  status: string;
+  stage?: string | null;
+  progress_current?: number;
+  progress_total?: number;
+  detail?: string | null;
+  retry_count: number;
+  error_message?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 type ManualKnowledgeDraft = {
   title: string;
   knowledge_category: string;
@@ -251,6 +266,22 @@ async function fetchMyPublishRequests() {
   return (json.data ?? []) as MyPublishRequest[];
 }
 
+async function fetchDocumentTasks(documentId: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/tasks?related_document_id=${encodeURIComponent(documentId)}`);
+  if (!res.ok) throw new Error('加载文档解析任务失败');
+  const json = await res.json();
+  return (json.data ?? []) as TaskItem[];
+}
+
+async function retryDocumentParsing(documentId: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/documents/${documentId}/parse/retry`, { method: 'POST' });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '重新提交解析任务失败');
+  }
+  return res.json();
+}
+
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -316,6 +347,9 @@ export default function DocumentsPage() {
   const [publishSubmitting, setPublishSubmitting] = useState(false);
   const [myPublishRequests, setMyPublishRequests] = useState<MyPublishRequest[]>([]);
   const [myPublishLoading, setMyPublishLoading] = useState(false);
+  const [documentTasks, setDocumentTasks] = useState<TaskItem[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [retryingParse, setRetryingParse] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -362,6 +396,17 @@ export default function DocumentsPage() {
     }
   }, []);
 
+  const loadDocumentTasks = async (documentId: string) => {
+    setTasksLoading(true);
+    try {
+      setDocumentTasks(await fetchDocumentTasks(documentId));
+    } catch (error) {
+      console.warn(error);
+    } finally {
+      setTasksLoading(false);
+    }
+  };
+
   const filteredDocuments = useMemo(() => {
     const q = query.trim().toLowerCase();
     return documents.filter((doc) => {
@@ -389,6 +434,29 @@ export default function DocumentsPage() {
   }, [documents, query, spaceFilter]);
 
   const selectedDocument = filteredDocuments.find((doc) => doc.document_id === selectedDocId) ?? filteredDocuments[0] ?? null;
+  const selectedParseTask = useMemo(
+    () => documentTasks.find((task) => task.task_type === 'parse_document' && task.related_document_id === selectedDocument?.document_id) ?? null,
+    [documentTasks, selectedDocument?.document_id],
+  );
+
+  useEffect(() => {
+    if (!selectedDocument?.document_id) {
+      setDocumentTasks([]);
+      return;
+    }
+    void loadDocumentTasks(selectedDocument.document_id);
+  }, [selectedDocument?.document_id]);
+
+  useEffect(() => {
+    if (!selectedDocument?.document_id) return;
+    const active = selectedDocument.parse_status === 'queued' || selectedDocument.parse_status === 'processing' || ['queued', 'pending', 'running'].includes(selectedParseTask?.status || '');
+    if (!active) return;
+    const timer = window.setInterval(() => {
+      void load();
+      void loadDocumentTasks(selectedDocument.document_id);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [selectedDocument?.document_id, selectedDocument?.parse_status, selectedParseTask?.status]);
 
   const groupedSearchResults = useMemo(() => {
     const map = new Map<string, SearchItem[]>();
@@ -904,6 +972,44 @@ export default function DocumentsPage() {
                     )}
                     <div className="rounded-xl bg-slate-50 p-3">发布：{publishStatusLabel(selectedDocument.publish_status || 'none')}</div>
                   </div>
+                  {selectedParseTask && (
+                    <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-medium">解析进度</div>
+                        <Badge className="bg-white text-blue-700 hover:bg-white">{parseStatusLabel(selectedParseTask.status)}</Badge>
+                      </div>
+                      <div className="mt-2 text-blue-800">
+                        阶段：{parseStatusLabel(selectedParseTask.stage || selectedParseTask.status)}
+                        {selectedParseTask.progress_total ? ` · ${selectedParseTask.progress_current || 0}/${selectedParseTask.progress_total}` : ''}
+                      </div>
+                      {(selectedParseTask.detail || selectedParseTask.error_message) && (
+                        <div className="mt-2 rounded-lg bg-white/80 p-3 text-blue-900">{selectedParseTask.error_message || selectedParseTask.detail}</div>
+                      )}
+                      {tasksLoading && <div className="mt-2 text-xs text-blue-700">正在刷新解析状态...</div>}
+                      {['failed', 'stalled'].includes(selectedParseTask.status) && (
+                        <Button
+                          className="mt-3"
+                          size="sm"
+                          variant="outline"
+                          disabled={retryingParse}
+                          onClick={async () => {
+                            try {
+                              setRetryingParse(true);
+                              await retryDocumentParsing(selectedDocument.document_id);
+                              await load();
+                              await loadDocumentTasks(selectedDocument.document_id);
+                            } catch (error) {
+                              alert(error instanceof Error ? error.message : '继续解析失败');
+                            } finally {
+                              setRetryingParse(false);
+                            }
+                          }}
+                        >
+                          <RefreshCw size={14} className={retryingParse ? 'animate-spin' : ''} /> 继续解析
+                        </Button>
+                      )}
+                    </div>
+                  )}
                   {!isAccessible(selectedDocument) && (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
                       {selectedDocument.access_reason || '该文档受权限保护。提交访问申请后，管理员审核通过即可查看正文。'}

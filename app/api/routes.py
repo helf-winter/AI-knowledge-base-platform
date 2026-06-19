@@ -248,6 +248,23 @@ def _metadata_response(item) -> KnowledgeMetadataRead:
     )
 
 
+def _task_response(item) -> TaskRead:
+    return TaskRead(
+        task_id=item.task_id,
+        task_type=item.task_type,
+        related_document_id=item.related_document_id,
+        status=item.status,
+        stage=item.stage,
+        progress_current=item.progress_current,
+        progress_total=item.progress_total,
+        detail=item.detail,
+        retry_count=item.retry_count,
+        error_message=item.error_message,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+        updated_at=item.updated_at.isoformat() if item.updated_at else None,
+    )
+
+
 def _suggestion_response(item, service: KnowledgeSuggestionService | None = None) -> PublicKnowledgeSuggestionRead:
     context = service.get_context(item) if service is not None else {}
     document = context.get("document") if context else None
@@ -437,7 +454,16 @@ async def upload_document(request: Request, file: UploadFile = File(...), db: Se
     try:
         validate_upload_file(file)
         content = await file.read()
-        document = KnowledgeService(db).upload_document(file.filename, content, owner_user_id=user.user_id)
+        service = KnowledgeService(db)
+        document = service.create_upload_record(file.filename, content, owner_user_id=user.user_id, parse_status="queued")
+        task = TaskService(db).create_task("parse_document", related_document_id=document.document_id)
+        threshold = get_settings().background_parse_threshold_mb * 1024 * 1024
+        if len(content) >= threshold:
+            TaskService(db).mark_queued(task.task_id, "文件较大，已进入后台解析队列")
+            service.enqueue_parse_document(document.document_id, task.task_id)
+        else:
+            service.run_parse_document_task(document.document_id, task.task_id)
+            db.refresh(document)
         AuditService(db).record(user_id=user.user_id, action="upload_document", resource_type="document", resource_id=document.document_id, trace_id=_trace_id_from_request(request), payload={"file_name": file.filename, "file_size": len(content)})
         return APIResponse(data=DocumentCreateResponse(document_id=document.document_id, file_name=document.file_name, parse_status=document.parse_status))
     except Exception as exc:
@@ -562,7 +588,7 @@ def delete_document(document_id: str, request: Request, db: Session = Depends(ge
 @router.get("/tasks", response_model=APIResponse[list[TaskRead]])
 def list_tasks(status: str | None = None, related_document_id: str | None = None, db: Session = Depends(get_db), _user=Depends(get_current_user)):
     items = TaskService(db).list_tasks(status=status, related_document_id=related_document_id)
-    return APIResponse(data=[TaskRead(task_id=item.task_id, task_type=item.task_type, related_document_id=item.related_document_id, status=item.status, retry_count=item.retry_count, error_message=item.error_message, created_at=item.created_at.isoformat() if item.created_at else None, updated_at=item.updated_at.isoformat() if item.updated_at else None) for item in items])
+    return APIResponse(data=[_task_response(item) for item in items])
 
 
 @router.get("/flywheel/learning", response_model=APIResponse[dict[str, Any]])
@@ -634,7 +660,25 @@ def review_learning_gap_draft(gap_id: str, payload: LearningGapDraftReview, requ
 @router.post("/tasks/{task_id}/retry", response_model=APIResponse[TaskRead])
 def retry_task(task_id: str, db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
     item = TaskService(db).retry_task(task_id)
-    return APIResponse(data=TaskRead(task_id=item.task_id, task_type=item.task_type, related_document_id=item.related_document_id, status=item.status, retry_count=item.retry_count, error_message=item.error_message, created_at=item.created_at.isoformat() if item.created_at else None, updated_at=item.updated_at.isoformat() if item.updated_at else None))
+    return APIResponse(data=_task_response(item))
+
+
+@router.post("/documents/{document_id}/parse/retry", response_model=APIResponse[TaskRead])
+def retry_document_parse(document_id: str, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    try:
+        DocumentAccessService(db).require_document_access(document_id, user)
+        task = KnowledgeService(db).retry_document_parsing(document_id)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="retry_parse_document",
+            resource_type="document",
+            resource_id=document_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"task_id": task.task_id},
+        )
+        return APIResponse(data=_task_response(task))
+    except Exception as exc:
+        _handle_app_error(exc)
 
 
 @router.post("/knowledge/search", response_model=APIResponse[SearchResponse])

@@ -73,6 +73,11 @@ const LABELS: Record<string, string> = {
   update_metadata: '更新知识条目',
   upload: '上传导入',
   upload_document: '上传文档',
+  queued: '排队中',
+  extracting_text: '提取文本中',
+  chunking: '切分知识片段中',
+  embedding: '生成语义向量中',
+  stalled: '可能已中断',
 };
 
 export function displayLabel(value?: string | null, fallback = '-') {

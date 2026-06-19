@@ -4,6 +4,7 @@ param(
     [string]$CondaEnv = "knowledge-base",
     [switch]$SkipInstall,
     [switch]$InstallDeps,
+    [switch]$NoWorker,
     [switch]$NoBrowser
 )
 
@@ -76,6 +77,21 @@ if (Test-PortInUse $BackendPort) {
         "-Command",
         "cd '$Root'; conda run -n '$CondaEnv' python -m uvicorn app.main:app --host 127.0.0.1 --port $BackendPort --reload"
     ) | Out-Null
+}
+
+if (-not $NoWorker) {
+    if (Test-PortInUse 6379) {
+        Write-Host "Starting Celery worker for background document parsing"
+        Start-Process powershell -ArgumentList @(
+            "-NoExit",
+            "-ExecutionPolicy", "Bypass",
+            "-Command",
+            "cd '$Root'; conda run -n '$CondaEnv' celery -A app.worker.celery_app worker --pool=solo --loglevel=info"
+        ) | Out-Null
+    } else {
+        Write-Warning "Redis port 6379 is not listening. Background parsing worker was not started."
+        Write-Warning "Start Redis first, or run with Docker Compose. Small files can still parse synchronously."
+    }
 }
 
 if (Test-PortInUse $FrontendPort) {

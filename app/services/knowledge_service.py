@@ -1,8 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from pathlib import Path
 import uuid
 
 from sqlalchemy import func, select
@@ -68,14 +70,14 @@ class KnowledgeService:
     def delete_document(self, document_id: str) -> Document:
         document = self.get_document(document_id)
         if document is None:
-            raise ValidationAppError("文档不存在")
+            raise ValidationAppError("document not found")
         self.db.delete(document)
         self.db.commit()
         return document
 
     def search(self, query: str, top_k: int = 5, user_id: str | None = None, scope: dict[str, Any] | None = None) -> list[SearchHit]:
         if not query.strip():
-            raise ValidationAppError("query 不能为空")
+            raise ValidationAppError("query 涓嶈兘涓虹┖")
         skill_result = self.skills.knowledge_search().execute(query=query, top_k=top_k, user_id=user_id, scope=scope)
         results = skill_result.output.get("results", [])
         hits: list[SearchHit] = []
@@ -99,10 +101,22 @@ class KnowledgeService:
         return self.tasks.list_tasks(status=status)
 
     def upload_document(self, file_name: str, content: bytes, owner_user_id: str | None = None) -> Document:
+        document = self.create_upload_record(file_name, content, owner_user_id=owner_user_id, parse_status="queued")
+        task = self.tasks.create_task("parse_document", related_document_id=document.document_id)
+        threshold = settings.background_parse_threshold_mb * 1024 * 1024
+        if len(content) >= threshold:
+            self.tasks.mark_queued(task.task_id, "文件较大，已进入后台解析队列")
+            self.enqueue_parse_document(document.document_id, task.task_id)
+        else:
+            self.run_parse_document_task(document.document_id, task.task_id)
+        self.db.refresh(document)
+        return document
+
+    def create_upload_record(self, file_name: str, content: bytes, owner_user_id: str | None = None, parse_status: str = "queued") -> Document:
         if not file_name:
-            raise ValidationAppError("文件名不能为空")
+            raise ValidationAppError("file_name cannot be empty")
         if not content:
-            raise ValidationAppError("文件内容不能为空")
+            raise ValidationAppError("file content cannot be empty")
 
         checksum = calculate_sha256(content)
         exists = self.db.execute(select(Document).where(Document.checksum == checksum, Document.file_name == file_name)).scalar_one_or_none()
@@ -118,7 +132,7 @@ class KnowledgeService:
             file_size=len(content),
             storage_path=storage_path,
             checksum=checksum,
-            parse_status="processing",
+            parse_status=parse_status,
             visibility="private",
             visibility_type="private",
             knowledge_space="personal",
@@ -130,29 +144,94 @@ class KnowledgeService:
         self.db.add(document)
         self.db.commit()
         self.db.refresh(document)
+        return document
 
-        task = self.tasks.create_task("parse_document", related_document_id=document.document_id)
+    def enqueue_parse_document(self, document_id: str, task_id: str) -> None:
         try:
-            self.tasks.mark_running(task.task_id)
-            self._process_document(document, content)
-            self.tasks.mark_succeeded(task.task_id)
+            from app.tasks.jobs import parse_document_task
+
+            parse_document_task.delay(document_id, task_id)
+        except Exception as exc:
+            self.tasks.mark_failed(task_id, f"鍚庡彴闃熷垪鎶曢€掑け璐ワ細{exc}")
+            document = self.get_document(document_id)
+            if document is not None:
+                document.parse_status = "failed"
+                self.db.commit()
+            raise
+
+    def run_parse_document_task(self, document_id: str, task_id: str) -> Document:
+        document = self.get_document(document_id)
+        if document is None:
+            self.tasks.mark_failed(task_id, "document not found")
+            raise ValidationAppError("document not found")
+        if document.storage_path.startswith("generated://"):
+            self.tasks.mark_failed(task_id, "generated document does not need parsing")
+            raise ValidationAppError("generated document does not need parsing")
+
+        path = Path(document.storage_path)
+        if not path.exists():
+            self.tasks.mark_failed(task_id, f"raw file not found: {document.storage_path}")
+            document.parse_status = "failed"
+            self.db.commit()
+            raise ValidationAppError("raw file not found")
+
+        try:
+            document.parse_status = "processing"
+            self.db.commit()
+            self.tasks.mark_progress(task_id, "extracting_text", 0, 0, "姝ｅ湪鎻愬彇鏂囨湰")
+            self._process_document(document, path.read_bytes(), task_id=task_id)
             self._ensure_metadata(document)
+            self.tasks.mark_succeeded(task_id)
+            self.db.refresh(document)
+            return document
         except Exception as exc:
             self.db.rollback()
-            self.tasks.mark_failed(task.task_id, str(exc))
+            document = self.get_document(document_id)
+            if document is not None:
+                document.parse_status = "failed"
+                self.db.commit()
+            self.tasks.mark_failed(task_id, str(exc))
             raise
-        return document
+
+    def retry_document_parsing(self, document_id: str) -> TaskRecord:
+        document = self.get_document(document_id)
+        if document is None:
+            raise ValidationAppError("document not found")
+        task = self.db.execute(
+            select(TaskRecord)
+            .where(TaskRecord.related_document_id == document_id, TaskRecord.task_type == "parse_document")
+            .order_by(TaskRecord.created_at.desc())
+        ).scalars().first()
+        if task is None:
+            task = self.tasks.create_task("parse_document", related_document_id=document_id)
+        elif task.status == "running" and not self._is_stale_parse_task(task):
+            raise ValidationAppError("parse task is already running")
+        else:
+            task = self.tasks.retry_task(task.task_id)
+        document.parse_status = "queued"
+        self.db.commit()
+        self.enqueue_parse_document(document.document_id, task.task_id)
+        self.db.refresh(task)
+        return task
+
+    def _is_stale_parse_task(self, task: TaskRecord) -> bool:
+        updated_at = task.updated_at or task.created_at
+        if updated_at is None:
+            return False
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - updated_at > timedelta(minutes=settings.parse_task_stale_minutes)
 
     def create_manual_knowledge(self, payload: ManualKnowledgeCreate, owner_user_id: str | None = None) -> Document:
         title = payload.title.strip()
         content = payload.content.strip()
         category = payload.knowledge_category.strip()
         if not title:
-            raise ValidationAppError("标题不能为空")
+            raise ValidationAppError("鏍囬涓嶈兘涓虹┖")
         if not content:
             raise ValidationAppError("正文不能为空")
         if not category:
-            raise ValidationAppError("知识类别不能为空")
+            raise ValidationAppError("鐭ヨ瘑绫诲埆涓嶈兘涓虹┖")
 
         full_content = self._build_manual_knowledge_content(payload, title, content, category)
         encoded = full_content.encode("utf-8")
@@ -239,28 +318,42 @@ class KnowledgeService:
 
     def _safe_manual_title(self, title: str) -> str:
         safe = "".join(ch for ch in title if ch.isalnum() or ch in (" ", "-", "_")).strip()
-        return safe[:80] or "手动记录知识"
+        return safe[:80] or "鎵嬪姩璁板綍鐭ヨ瘑"
 
-    def _process_document(self, document: Document, content: bytes) -> None:
+    def _process_document(self, document: Document, content: bytes, task_id: str | None = None) -> None:
         try:
             text = extract_text_from_bytes(document.file_name, content)
             document.content_text = text
             chunks = chunk_text(text, settings.chunk_size_tokens, settings.chunk_overlap_tokens)
+            if task_id:
+                self.tasks.mark_progress(task_id, "chunking", 0, len(chunks), f"chunked {len(chunks)} knowledge segments")
             if not chunks:
-                raise ValidationAppError("未能从文档中提取有效内容")
+                raise ValidationAppError("鏈兘浠庢枃妗ｄ腑鎻愬彇鏈夋晥鍐呭")
 
-            existing_hashes = {
+            # 断点续跑：复用已经写入的 chunk，并补齐缺失的 embedding。
+            existing_chunks_by_hash = {
+                chunk.content_hash: chunk
+                for chunk in self.db.execute(
+                    select(DocumentChunk).where(DocumentChunk.document_id == document.document_id)
+                ).scalars().all()
+            }
+            existing_embedding_chunk_ids = {
                 row[0]
                 for row in self.db.execute(
-                    select(DocumentChunk.content_hash).where(DocumentChunk.document_id == document.document_id)
+                    select(ChunkEmbedding.chunk_id)
+                    .join(DocumentChunk)
+                    .where(DocumentChunk.document_id == document.document_id)
                 ).all()
             }
 
             for idx, chunk in enumerate(chunks):
                 content_hash = calculate_sha256(chunk.encode("utf-8"))
-                if content_hash in existing_hashes:
+                existing_chunk = existing_chunks_by_hash.get(content_hash)
+                if existing_chunk is not None:
+                    self._ensure_chunk_embedding(existing_chunk, chunk, existing_embedding_chunk_ids)
+                    if task_id:
+                        self.tasks.mark_progress(task_id, "embedding", idx + 1, len(chunks), "复用已存在的知识片段")
                     continue
-                emb = self.embedding.embed_text(chunk)
                 doc_chunk = DocumentChunk(
                     chunk_id=str(uuid.uuid4()),
                     document_id=document.document_id,
@@ -277,16 +370,10 @@ class KnowledgeService:
                 )
                 self.db.add(doc_chunk)
                 self.db.flush()
-                self.db.add(
-                    ChunkEmbedding(
-                        embedding_id=str(uuid.uuid4()),
-                        chunk_id=doc_chunk.chunk_id,
-                        embedding_model=self.embedding.model_name,
-                        dimension=len(emb),
-                        vector=emb,
-                    )
-                )
-                existing_hashes.add(content_hash)
+                self._ensure_chunk_embedding(doc_chunk, chunk, existing_embedding_chunk_ids)
+                existing_chunks_by_hash[content_hash] = doc_chunk
+                if task_id:
+                    self.tasks.mark_progress(task_id, "embedding", idx + 1, len(chunks), "正在生成语义向量")
 
             document.parse_status = "succeeded"
             self.db.commit()
@@ -295,6 +382,21 @@ class KnowledgeService:
             document.parse_status = "failed"
             self.db.commit()
             raise
+
+    def _ensure_chunk_embedding(self, chunk: DocumentChunk, content: str, existing_embedding_chunk_ids: set[str]) -> None:
+        if chunk.chunk_id in existing_embedding_chunk_ids:
+            return
+        vector = self.embedding.embed_text(content)
+        self.db.add(
+            ChunkEmbedding(
+                embedding_id=str(uuid.uuid4()),
+                chunk_id=chunk.chunk_id,
+                embedding_model=self.embedding.model_name,
+                dimension=len(vector),
+                vector=vector,
+            )
+        )
+        existing_embedding_chunk_ids.add(chunk.chunk_id)
 
     def _ensure_metadata(self, document: Document) -> None:
         """Create a reviewable metadata row after successful ingestion.
@@ -535,8 +637,8 @@ class KnowledgeService:
 
     def _safe_generated_title(self, query: str) -> str:
         title = "".join(ch for ch in query.strip() if ch.isalnum() or ch in (" ", "-", "_")).strip()
-        title = title[:40] or "AI补充知识"
-        return f"AI补充-{title}"
+        title = title[:40] or "AI琛ュ厖鐭ヨ瘑"
+        return f"AI琛ュ厖-{title}"
 
     def _make_turn_payload(
         self,
@@ -624,3 +726,4 @@ class KnowledgeService:
             except Exception:
                 self.db.rollback()
         return feedback
+
