@@ -51,15 +51,12 @@ class DocumentAccessService:
                 public_ref_category=public_ref.target_category,
             )
 
-        if "admin" in user.roles:
-            return AccessDecision(True, "管理员可访问")
-
         if document.owner_user_id and document.owner_user_id == user.user_id:
             return AccessDecision(True, "文档创建者可访问")
 
         knowledge_space = (document.knowledge_space or "public").lower()
         if knowledge_space == "personal":
-            return AccessDecision(False, "个人知识仅创建者可访问", False)
+            return AccessDecision(False, "个人知识仅创建者可访问；管理员只能在用户提交发布审核后通过审核流程查看必要内容", False)
 
         if knowledge_space == "department":
             allowed_departments = self._parse_list(document.allowed_departments)

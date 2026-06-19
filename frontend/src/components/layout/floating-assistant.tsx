@@ -62,7 +62,8 @@ type ExpertAgentOption = {
   status: string;
 };
 
-const STORAGE_KEY = 'kb_floating_assistant_messages';
+const STORAGE_KEY_PREFIX = 'kb_floating_assistant_messages';
+const SESSION_KEY_PREFIX = 'kb_floating_assistant_session';
 
 function getToken() {
   return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
@@ -77,10 +78,22 @@ function getCurrentUserId() {
   }
 }
 
-async function streamAnswer(query: string, agentId: string | null, onUpdate: (state: StreamState) => void) {
+function getAssistantSessionId(userId: string) {
+  const key = `${SESSION_KEY_PREFIX}:${userId}`;
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const next = crypto.randomUUID();
+  localStorage.setItem(key, next);
+  return next;
+}
+
+function getAssistantMessagesKey(userId: string) {
+  return `${STORAGE_KEY_PREFIX}:${userId}`;
+}
+
+async function streamAnswer(query: string, agentId: string | null, sessionId: string, onUpdate: (state: StreamState) => void) {
   const token = getToken();
   const userId = getCurrentUserId() || 'anonymous';
-  const sessionId = crypto.randomUUID();
   const res = await fetch(`${API_BASE}/api/v1/chat/stream`, {
     method: 'POST',
     headers: {
@@ -283,7 +296,7 @@ export function FloatingAssistant() {
     setLauncherPosition({ x: Math.max(16, window.innerWidth - 140), y: Math.max(16, window.innerHeight - 92) });
     setPanelPosition({ x: Math.max(16, window.innerWidth - 452), y: 24 });
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(getAssistantMessagesKey(getCurrentUserId() || 'anonymous'));
       if (raw) setMessages(JSON.parse(raw) as ChatMessage[]);
     } catch {}
     void fetchExpertAgents().then((items) => setAgents(items.filter((item) => item.status === 'active'))).catch(() => setAgents([]));
@@ -291,7 +304,7 @@ export function FloatingAssistant() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-20)));
+      localStorage.setItem(getAssistantMessagesKey(getCurrentUserId() || 'anonymous'), JSON.stringify(messages.slice(-20)));
     } catch {}
   }, [messages]);
 
@@ -384,12 +397,13 @@ export function FloatingAssistant() {
     try {
       setLoading(true);
       const cleanQuery = query.trim();
+      const sessionId = getAssistantSessionId(getCurrentUserId() || 'anonymous');
       const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', query: cleanQuery };
       const assistantId = crypto.randomUUID();
       const assistantMessage: ChatMessage = { id: assistantId, role: 'assistant', query: cleanQuery, answer: '', sources: [] };
       setMessages((current) => [...current, userMessage, assistantMessage].slice(-20));
       setQuery('');
-      await streamAnswer(cleanQuery, selectedAgentId || null, (state) => {
+      await streamAnswer(cleanQuery, selectedAgentId || null, sessionId, (state) => {
         updateMessage(assistantId, {
           answer: state.answer,
           error: state.error ?? '',
@@ -590,7 +604,7 @@ export function FloatingAssistant() {
                 >
                   <SendHorizonal size={16} /> {loading ? '回答中...' : '发送'}
                 </Button>
-                <Button variant="outline" onClick={() => { setQuery(''); setMessages([]); localStorage.removeItem(STORAGE_KEY); }}>
+                <Button variant="outline" onClick={() => { setQuery(''); setMessages([]); localStorage.removeItem(getAssistantMessagesKey(getCurrentUserId() || 'anonymous')); }}>
                   清空会话
                 </Button>
               </div>

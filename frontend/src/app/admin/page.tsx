@@ -57,6 +57,7 @@ type PublishRequest = {
   requester_name?: string | null;
   requester_employee_no?: string | null;
   document_name?: string | null;
+  document_content_preview?: string | null;
   target_category: string;
   allowed_job_categories: string;
   publish_reason: string;
@@ -520,12 +521,13 @@ export default function AdminPage() {
                   </div>
                 </div>
                 <Textarea value={publishReviewComment} onChange={(event) => setPublishReviewComment(event.target.value)} placeholder="填写发布审核意见" className="bg-white text-slate-900 placeholder:text-slate-400" />
+                <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+                  <div className="text-xs font-medium text-blue-700">发布审核预览</div>
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-sm leading-6 text-slate-900">
+                    {selectedPublishRequest.document_content_preview || '该申请当前没有可预览的正文内容。'}
+                  </pre>
+                </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button asChild variant="outline">
-                    <Link href={`/documents/${selectedPublishRequest.document_id}`}>
-                      <ArrowRight size={14} /> 查看文档
-                    </Link>
-                  </Button>
                   <Button
                     disabled={selectedPublishRequest.status !== 'pending' || publishReviewingId === selectedPublishRequest.request_id}
                     onClick={async () => {

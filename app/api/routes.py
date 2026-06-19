@@ -16,6 +16,7 @@ from app.agents.review_agent import ReviewAgent
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_roles
 from app.models.core import AuditLog
+from app.models.document import Document
 from app.schemas.admin import ExpertAgentCreate, ExpertAgentRead, KnowledgeHotnessRead, KnowledgeMetadataCreate, KnowledgeMetadataRead, KnowledgeMetadataUpdate, SkillDescriptor
 from app.schemas.audit import AuditLogRead
 from app.schemas.auth import ChangeInitialPasswordRequest, CurrentUserRead, LoginRequest, RegisterRequest, TokenResponse, VerifyPasswordRequest
@@ -187,6 +188,8 @@ def _publish_request_response(item, service: KnowledgePublishService | None = No
     context = service.get_context(item) if service is not None else {}
     requester = context.get("requester") if context else None
     document = context.get("document") if context else None
+    content_text = getattr(document, "content_text", None)
+    document_content_preview = content_text[:4000] if isinstance(content_text, str) and item.status == "pending" else None
     return KnowledgePublishRequestRead(
         request_id=item.request_id,
         document_id=item.document_id,
@@ -194,6 +197,7 @@ def _publish_request_response(item, service: KnowledgePublishService | None = No
         requester_name=getattr(requester, "display_name", None),
         requester_employee_no=getattr(requester, "employee_no", None),
         document_name=getattr(document, "file_name", None),
+        document_content_preview=document_content_preview,
         target_category=item.target_category,
         allowed_job_categories=item.allowed_job_categories,
         publish_reason=item.publish_reason,
@@ -770,8 +774,16 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
 
     def event_stream():
         try:
+            conversation_context = ConversationService(db).recent_context(session_id=session_id, user_id=user.user_id, limit=6)
             agent_context = service.resolve_agent_context(payload.query, agent_id=payload.agent_id)
-            expert_stream, refs, _traces = service.stream_answer(query=payload.query, top_k=5, user_id=user.user_id, casual=False, agent_context=agent_context)
+            expert_stream, refs, _traces = service.stream_answer(
+                query=payload.query,
+                top_k=5,
+                user_id=user.user_id,
+                casual=False,
+                agent_context=agent_context,
+                conversation_context=conversation_context,
+            )
             expert_answer = "".join(chunk for chunk in expert_stream if chunk)
             should_fallback = (not refs) or _looks_like_unknown_answer(expert_answer)
             answer_stream = None
@@ -781,7 +793,13 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
             can_expand = False
 
             if should_fallback:
-                answer_stream, _general_refs, _general_traces = service.stream_answer(query=payload.query, top_k=5, user_id=user.user_id, casual=True)
+                answer_stream, _general_refs, _general_traces = service.stream_answer(
+                    query=payload.query,
+                    top_k=5,
+                    user_id=user.user_id,
+                    casual=True,
+                    conversation_context=conversation_context,
+                )
                 visible_refs = []
                 source_documents = []
                 mode = "auto_general"
@@ -926,9 +944,17 @@ def list_audit_logs(trace_id: str | None = None, action: str | None = None, reso
 
 
 @router.get("/admin/knowledge-metadata", response_model=APIResponse[list[KnowledgeMetadataRead]])
-def list_knowledge_metadata(status: str | None = None, document_id: str | None = None, include_archived: bool = False, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def list_knowledge_metadata(status: str | None = None, document_id: str | None = None, include_archived: bool = False, db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
     items = KnowledgeAdminService(db).list_metadata(status=status, document_id=document_id, include_archived=include_archived)
-    return APIResponse(data=[KnowledgeMetadataRead(knowledge_id=item.knowledge_id, document_id=item.document_id, title=item.title, author=item.author, knowledge_type=item.knowledge_type, version=item.version, status=item.status, source_type=item.source_type, acl_json=item.acl_json, is_archived=bool(item.is_archived), deleted_at=item.deleted_at, created_at=item.created_at, updated_at=item.updated_at) for item in items])
+    access = DocumentAccessService(db)
+    visible = []
+    for item in items:
+        document = db.get(Document, item.document_id)
+        if document is None:
+            continue
+        if access.can_access_document(document, user).can_access:
+            visible.append(item)
+    return APIResponse(data=[KnowledgeMetadataRead(knowledge_id=item.knowledge_id, document_id=item.document_id, title=item.title, author=item.author, knowledge_type=item.knowledge_type, version=item.version, status=item.status, source_type=item.source_type, acl_json=item.acl_json, is_archived=bool(item.is_archived), deleted_at=item.deleted_at, created_at=item.created_at, updated_at=item.updated_at) for item in visible])
 
 
 @router.get("/admin/skills", response_model=APIResponse[list[SkillDescriptor]])

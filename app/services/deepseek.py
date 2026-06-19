@@ -19,8 +19,16 @@ class DeepSeekClient:
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
-    def build_messages(self, question: str, context_chunks: list[str], casual: bool = False, expert_context: dict[str, str] | None = None) -> list[dict[str, str]]:
+    def build_messages(
+        self,
+        question: str,
+        context_chunks: list[str],
+        casual: bool = False,
+        expert_context: dict[str, str] | None = None,
+        conversation_context: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
         context_text = "\n\n".join(f"[{idx + 1}] {chunk}" for idx, chunk in enumerate(context_chunks))
+        conversation_text = self._format_conversation_context(conversation_context or [])
         expert_prompt = ""
         if expert_context:
             expert_prompt = (
@@ -50,19 +58,28 @@ class DeepSeekClient:
                 "语气专业、简洁、可执行。"
             )
             user_prompt = f"问题：{question}\n\n知识库上下文：\n{context_text or '无'}"
+        if conversation_text:
+            user_prompt = f"{conversation_text}当前问题：{question}\n\n{user_prompt}"
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
-    def stream_chat(self, question: str, context_chunks: list[str], casual: bool = False, expert_context: dict[str, str] | None = None) -> Iterable[str]:
+    def stream_chat(
+        self,
+        question: str,
+        context_chunks: list[str],
+        casual: bool = False,
+        expert_context: dict[str, str] | None = None,
+        conversation_context: list[dict[str, str]] | None = None,
+    ) -> Iterable[str]:
         if not self.is_configured():
             yield self._build_fallback_answer(question, context_chunks, casual=casual)
             return
 
         payload = {
             "model": self.model,
-            "messages": self.build_messages(question, context_chunks, casual=casual, expert_context=expert_context),
+            "messages": self.build_messages(question, context_chunks, casual=casual, expert_context=expert_context, conversation_context=conversation_context),
             "stream": True,
             "thinking": {"type": "enabled"} if settings.deepseek_thinking_enabled else {"type": "disabled"},
             "reasoning_effort": "high",
@@ -120,6 +137,22 @@ class DeepSeekClient:
         if text:
             return str(text)
         return ""
+
+    def _format_conversation_context(self, conversation_context: list[dict[str, str]]) -> str:
+        if not conversation_context:
+            return ""
+        lines = ["最近对话上下文："]
+        for idx, item in enumerate(conversation_context[-6:], start=1):
+            query = str(item.get("query") or "").strip()
+            answer = str(item.get("answer") or "").strip()
+            if len(answer) > 500:
+                answer = f"{answer[:500]}..."
+            if query or answer:
+                lines.append(f"{idx}. 用户：{query}\n   助手：{answer}")
+        if len(lines) == 1:
+            return ""
+        lines.append("请结合上述上下文理解代词、省略表达和追问，但不要编造知识库中没有的公司制度。")
+        return "\n".join(lines) + "\n\n"
 
     def _build_fallback_answer(self, question: str, context_chunks: list[str], casual: bool = False) -> str:
         if casual:

@@ -231,6 +231,7 @@ class KnowledgeService:
         user_id: str | None = None,
         trace_id: str | None = None,
         agent_id: str | None = None,
+        conversation_context: list[dict[str, str]] | None = None,
     ) -> tuple[str, list[SearchHit], float, list[str], str | None, str | None, str | None]:
         agent_context = self.resolve_agent_context(query=query, agent_id=agent_id)
         hits = self.search(query=query, top_k=top_k, user_id=user_id, scope=agent_context.search_scope() if agent_context else None)
@@ -245,7 +246,13 @@ class KnowledgeService:
             return answer, [], 0.0, [], agent_context.agent_id if agent_context else None, agent_context.agent_name if agent_context else None, agent_context.selection_reason if agent_context else None
 
         refs = [f"{h.chunk.document.file_name}#chunk-{h.chunk.chunk_index}" for h in hits]
-        answer, refs_from_agent, _traces = self.expert_agent.answer(question=query, top_k=top_k, user_id=user_id, agent_context=agent_context)
+        answer, refs_from_agent, _traces = self.expert_agent.answer(
+            question=query,
+            top_k=top_k,
+            user_id=user_id,
+            agent_context=agent_context,
+            conversation_context=conversation_context,
+        )
         if refs_from_agent:
             refs = refs_from_agent
 
@@ -276,9 +283,24 @@ class KnowledgeService:
     def resolve_agent_context(self, query: str, agent_id: str | None = None) -> ExpertAgentContext | None:
         return self.agent_runtime.resolve(question=query, agent_id=agent_id)
 
-    def stream_answer(self, query: str, top_k: int = 5, user_id: str | None = None, casual: bool = False, agent_context: ExpertAgentContext | None = None):
+    def stream_answer(
+        self,
+        query: str,
+        top_k: int = 5,
+        user_id: str | None = None,
+        casual: bool = False,
+        agent_context: ExpertAgentContext | None = None,
+        conversation_context: list[dict[str, str]] | None = None,
+    ):
         """Return a stream iterator together with references and traces."""
-        return self.expert_agent.stream_answer(question=query, top_k=top_k, user_id=user_id, casual=casual, agent_context=agent_context)
+        return self.expert_agent.stream_answer(
+            question=query,
+            top_k=top_k,
+            user_id=user_id,
+            casual=casual,
+            agent_context=agent_context,
+            conversation_context=conversation_context,
+        )
 
     def expand_knowledge_from_answer(self, query: str, answer: str, user_id: str | None = None, target_document_id: str | None = None, threshold: float = 0.25) -> dict[str, str | None]:
         content = self._build_expansion_content(query, answer)

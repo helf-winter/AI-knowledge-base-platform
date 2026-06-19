@@ -206,6 +206,7 @@ class KnowledgePublishRequestRead(BaseModel):
     requester_name: str | None = None
     requester_employee_no: str | None = None
     document_name: str | None = None
+    document_content_preview: str | None = None
     target_category: str
     allowed_job_categories: str
     publish_reason: str

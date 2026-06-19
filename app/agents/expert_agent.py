@@ -23,7 +23,15 @@ class ExpertAgent:
         self.skills = SkillRegistry(db)
         self.llm = DeepSeekClient()
 
-    def answer(self, question: str, top_k: int = 5, user_id: str | None = None, casual: bool = False, agent_context: ExpertAgentContext | None = None) -> tuple[str, list[str], list[AgentTrace]]:
+    def answer(
+        self,
+        question: str,
+        top_k: int = 5,
+        user_id: str | None = None,
+        casual: bool = False,
+        agent_context: ExpertAgentContext | None = None,
+        conversation_context: list[dict[str, str]] | None = None,
+    ) -> tuple[str, list[str], list[AgentTrace]]:
         search_result = self.skills.knowledge_search().execute(query=question, top_k=top_k, user_id=user_id, scope=agent_context.search_scope() if agent_context else None)
         chunks = search_result.output.get("results", [])
         context_chunks = [item.get("content", "") for item in chunks]
@@ -31,7 +39,15 @@ class ExpertAgent:
         traces = self._search_traces(question, top_k, len(chunks))
 
         if self.llm.is_configured():
-            answer_parts = list(self.llm.stream_chat(question, context_chunks, casual=casual, expert_context=agent_context.prompt_context() if agent_context else None))
+            answer_parts = list(
+                self.llm.stream_chat(
+                    question,
+                    context_chunks,
+                    casual=casual,
+                    expert_context=agent_context.prompt_context() if agent_context else None,
+                    conversation_context=conversation_context,
+                )
+            )
             answer_text = "".join(answer_parts).strip()
             traces.append(
                 AgentTrace(
@@ -52,7 +68,15 @@ class ExpertAgent:
         )
         return self._fallback_answer(question, chunks), refs, traces
 
-    def stream_answer(self, question: str, top_k: int = 5, user_id: str | None = None, casual: bool = False, agent_context: ExpertAgentContext | None = None) -> tuple[Iterable[str], list[str], list[AgentTrace]]:
+    def stream_answer(
+        self,
+        question: str,
+        top_k: int = 5,
+        user_id: str | None = None,
+        casual: bool = False,
+        agent_context: ExpertAgentContext | None = None,
+        conversation_context: list[dict[str, str]] | None = None,
+    ) -> tuple[Iterable[str], list[str], list[AgentTrace]]:
         search_result = self.skills.knowledge_search().execute(query=question, top_k=top_k, user_id=user_id, scope=agent_context.search_scope() if agent_context else None)
         chunks = search_result.output.get("results", [])
         context_chunks = [item.get("content", "") for item in chunks]
@@ -60,7 +84,13 @@ class ExpertAgent:
         traces = self._search_traces(question, top_k, len(chunks))
 
         if self.llm.is_configured():
-            streamed = self.llm.stream_chat(question, context_chunks, casual=casual, expert_context=agent_context.prompt_context() if agent_context else None)
+            streamed = self.llm.stream_chat(
+                question,
+                context_chunks,
+                casual=casual,
+                expert_context=agent_context.prompt_context() if agent_context else None,
+                conversation_context=conversation_context,
+            )
             traces.append(
                 AgentTrace(
                     agent_name="ExpertAgent",

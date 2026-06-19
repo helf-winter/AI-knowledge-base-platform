@@ -37,3 +37,17 @@ class ConversationService:
         if user_id:
             stmt = stmt.where(ConversationTurn.user_id == user_id)
         return list(self.db.execute(stmt.order_by(ConversationTurn.created_at.desc())).scalars().all())
+
+    def recent_context(self, session_id: str, user_id: str | None = None, limit: int = 6) -> list[dict[str, str]]:
+        stmt = select(ConversationTurn).where(ConversationTurn.session_id == session_id)
+        if user_id:
+            stmt = stmt.where(ConversationTurn.user_id == user_id)
+        turns = list(self.db.execute(stmt.order_by(ConversationTurn.created_at.desc()).limit(limit)).scalars().all())
+        turns.reverse()
+        return [
+            {
+                "query": item.query_text,
+                "answer": item.answer_text,
+            }
+            for item in turns
+        ]
