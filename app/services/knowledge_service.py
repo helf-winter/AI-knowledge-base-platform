@@ -18,9 +18,10 @@ from app.models.core import KnowledgeMetadata, TaskRecord
 from app.models.document import Document, DocumentChunk, Feedback, PublicKnowledgeRef
 from app.models.vector import ChunkEmbedding
 from app.schemas.flywheel import KnowledgeGapCreate
+from app.schemas.knowledge import ManualKnowledgeCreate
 from app.schemas.review import ReviewRequest
 from app.services.conversation import ConversationService
-from app.services.embedding import fake_embedding
+from app.services.embedding import EmbeddingService
 from app.services.expert_agent_runtime import ExpertAgentContext, ExpertAgentRuntime
 from app.services.flywheel import KnowledgeFlywheelService
 from app.services.parsers import chunk_text, extract_text_from_bytes
@@ -54,6 +55,7 @@ class KnowledgeService:
         self.tasks = TaskService(db)
         self.agent_recommender = AgentRecommender(db)
         self.agent_runtime = ExpertAgentRuntime(db)
+        self.embedding = EmbeddingService()
 
     def list_documents(self, limit: int = 100, offset: int = 0) -> list[Document]:
         stmt = select(Document).order_by(Document.created_at.desc()).offset(offset).limit(limit)
@@ -141,6 +143,104 @@ class KnowledgeService:
             raise
         return document
 
+    def create_manual_knowledge(self, payload: ManualKnowledgeCreate, owner_user_id: str | None = None) -> Document:
+        title = payload.title.strip()
+        content = payload.content.strip()
+        category = payload.knowledge_category.strip()
+        if not title:
+            raise ValidationAppError("标题不能为空")
+        if not content:
+            raise ValidationAppError("正文不能为空")
+        if not category:
+            raise ValidationAppError("知识类别不能为空")
+
+        full_content = self._build_manual_knowledge_content(payload, title, content, category)
+        encoded = full_content.encode("utf-8")
+        document_id = str(uuid.uuid4())
+        document = Document(
+            document_id=document_id,
+            owner_user_id=owner_user_id,
+            file_name=f"{self._safe_manual_title(title)}.md",
+            file_type="md",
+            file_size=len(encoded),
+            storage_path=f"generated://manual-knowledge/{document_id}.md",
+            checksum=hashlib.sha256(encoded).hexdigest(),
+            parse_status="succeeded",
+            visibility="private",
+            visibility_type="private",
+            knowledge_space="personal",
+            visibility_scope="owner",
+            allowed_job_categories=(payload.allowed_job_categories or "").strip() or None,
+            knowledge_category=category,
+            publish_status="none",
+            is_public=False,
+            content_text=full_content,
+        )
+        self.db.add(document)
+        self.db.flush()
+
+        chunks = chunk_text(full_content, settings.chunk_size_tokens, settings.chunk_overlap_tokens) or [full_content]
+        for idx, chunk in enumerate(chunks):
+            content_hash = calculate_sha256(chunk.encode("utf-8"))
+            emb = self.embedding.embed_text(chunk)
+            doc_chunk = DocumentChunk(
+                chunk_id=str(uuid.uuid4()),
+                document_id=document.document_id,
+                chunk_index=idx,
+                parent_section_id=None,
+                content=chunk,
+                token_count=max(1, len(chunk.split())),
+                overlap_count=settings.chunk_overlap_tokens if idx > 0 else 0,
+                page_start=idx + 1,
+                page_end=idx + 1,
+                content_hash=content_hash,
+                language="zh",
+                embedding_json=None,
+            )
+            self.db.add(doc_chunk)
+            self.db.flush()
+            self.db.add(
+                ChunkEmbedding(
+                    embedding_id=str(uuid.uuid4()),
+                    chunk_id=doc_chunk.chunk_id,
+                    embedding_model=self.embedding.model_name,
+                    dimension=len(emb),
+                    vector=emb,
+                )
+            )
+
+        self.db.add(
+            KnowledgeMetadata(
+                knowledge_id=str(uuid.uuid4()),
+                document_id=document.document_id,
+                title=title,
+                author=None,
+                knowledge_type=category,
+                version="v1.0.0",
+                status="available",
+                source_type="manual",
+                acl_json=None,
+            )
+        )
+        self.db.commit()
+        self.db.refresh(document)
+        return document
+
+    def _build_manual_knowledge_content(self, payload: ManualKnowledgeCreate, title: str, content: str, category: str) -> str:
+        lines = [f"# {title}", "", f"知识类别：{category}"]
+        if payload.allowed_job_categories and payload.allowed_job_categories.strip():
+            lines.append(f"适用人员：{payload.allowed_job_categories.strip()}")
+        if payload.business_purpose and payload.business_purpose.strip():
+            lines.append(f"业务用途：{payload.business_purpose.strip()}")
+        if payload.tags and payload.tags.strip():
+            lines.append(f"标签：{payload.tags.strip()}")
+        lines.extend(["", "## 正文", content])
+        return "\n".join(lines)
+
+    def _safe_manual_title(self, title: str) -> str:
+        safe = "".join(ch for ch in title if ch.isalnum() or ch in (" ", "-", "_")).strip()
+        return safe[:80] or "手动记录知识"
+
     def _process_document(self, document: Document, content: bytes) -> None:
         try:
             text = extract_text_from_bytes(document.file_name, content)
@@ -160,7 +260,7 @@ class KnowledgeService:
                 content_hash = calculate_sha256(chunk.encode("utf-8"))
                 if content_hash in existing_hashes:
                     continue
-                emb = fake_embedding(chunk)
+                emb = self.embedding.embed_text(chunk)
                 doc_chunk = DocumentChunk(
                     chunk_id=str(uuid.uuid4()),
                     document_id=document.document_id,
@@ -181,7 +281,7 @@ class KnowledgeService:
                     ChunkEmbedding(
                         embedding_id=str(uuid.uuid4()),
                         chunk_id=doc_chunk.chunk_id,
-                        embedding_model="bge-m3",
+                        embedding_model=self.embedding.model_name,
                         dimension=len(emb),
                         vector=emb,
                     )
@@ -350,11 +450,11 @@ class KnowledgeService:
             if metadata.knowledge_type == "document":
                 metadata.knowledge_type = "document_ai_enriched"
 
-        vector = fake_embedding(content)
+        vector = self.embedding.embed_text(content)
         self.db.add(ChunkEmbedding(
             embedding_id=str(uuid.uuid4()),
             chunk_id=chunk.chunk_id,
-            embedding_model="bge-m3",
+            embedding_model=self.embedding.model_name,
             dimension=len(vector),
             vector=vector,
         ))

@@ -25,7 +25,7 @@ from app.schemas.common import APIResponse
 from app.schemas.conversation import ConversationTurnCreate, ConversationTurnRead
 from app.schemas.evaluation import EvaluationCaseCreate, EvaluationCaseRead, EvaluationRunCreate, EvaluationRunRead, EvaluationResultRead
 from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead, LearningGapDraftCreate, LearningGapDraftRead, LearningGapDraftReview
-from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, PublicKnowledgeRefRead, SearchRequest, SearchResponse
+from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, ManualKnowledgeCreate, PublicKnowledgeRefRead, PublicKnowledgeSuggestionCreate, PublicKnowledgeSuggestionRead, PublicKnowledgeSuggestionReview, SearchRequest, SearchResponse
 from app.schemas.observability import AlertEventRead, AlertRuleCreate, AlertRuleRead, MetricSnapshotCreate
 from app.schemas.review import ReviewRequest
 from app.schemas.task import TaskRead
@@ -37,7 +37,7 @@ from app.services.conversation import ConversationService
 from app.services.evaluation import EvaluationService
 from app.services.flywheel import KnowledgeFlywheelService
 from app.services.knowledge_admin import KnowledgeAdminService
-from app.services.knowledge_publish import KnowledgePublishService
+from app.services.knowledge_publish import KnowledgePublishService, KnowledgeSuggestionService
 from app.services.knowledge_service import KnowledgeService
 from app.services.observability import ObservabilityService
 from app.services.parsers import validate_upload_file
@@ -230,6 +230,49 @@ def _public_ref_response(item, service: KnowledgePublishService | None = None) -
     )
 
 
+def _metadata_response(item) -> KnowledgeMetadataRead:
+    return KnowledgeMetadataRead(
+        knowledge_id=item.knowledge_id,
+        document_id=item.document_id,
+        title=item.title,
+        author=item.author,
+        knowledge_type=item.knowledge_type,
+        version=item.version,
+        status=item.status,
+        source_type=item.source_type,
+        acl_json=item.acl_json,
+        is_archived=bool(item.is_archived),
+        deleted_at=item.deleted_at,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _suggestion_response(item, service: KnowledgeSuggestionService | None = None) -> PublicKnowledgeSuggestionRead:
+    context = service.get_context(item) if service is not None else {}
+    document = context.get("document") if context else None
+    requester = context.get("requester") if context else None
+    return PublicKnowledgeSuggestionRead(
+        suggestion_id=item.suggestion_id,
+        document_id=item.document_id,
+        document_name=getattr(document, "file_name", None),
+        public_ref_id=item.public_ref_id,
+        requester_id=item.requester_id,
+        requester_name=getattr(requester, "display_name", None),
+        requester_employee_no=getattr(requester, "employee_no", None),
+        suggestion_type=item.suggestion_type,
+        question=item.question,
+        suggestion=item.suggestion,
+        business_impact=item.business_impact,
+        status=item.status,
+        reviewed_by=item.reviewed_by,
+        review_comment=item.review_comment,
+        reviewed_at=item.reviewed_at.isoformat() if item.reviewed_at else None,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+        updated_at=item.updated_at.isoformat() if item.updated_at else None,
+    )
+
+
 def _gap_response(item) -> KnowledgeGapRecord:
     return KnowledgeGapRecord(
         gap_id=item.gap_id,
@@ -396,6 +439,27 @@ async def upload_document(request: Request, file: UploadFile = File(...), db: Se
         content = await file.read()
         document = KnowledgeService(db).upload_document(file.filename, content, owner_user_id=user.user_id)
         AuditService(db).record(user_id=user.user_id, action="upload_document", resource_type="document", resource_id=document.document_id, trace_id=_trace_id_from_request(request), payload={"file_name": file.filename, "file_size": len(content)})
+        return APIResponse(data=DocumentCreateResponse(document_id=document.document_id, file_name=document.file_name, parse_status=document.parse_status))
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
+@router.post("/documents/manual", response_model=APIResponse[DocumentCreateResponse])
+def create_manual_knowledge(payload: ManualKnowledgeCreate, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    try:
+        document = KnowledgeService(db).create_manual_knowledge(payload, owner_user_id=user.user_id)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="create_manual_knowledge",
+            resource_type="document",
+            resource_id=document.document_id,
+            trace_id=_trace_id_from_request(request),
+            payload={
+                "file_name": document.file_name,
+                "knowledge_category": document.knowledge_category,
+                "file_size": document.file_size,
+            },
+        )
         return APIResponse(data=DocumentCreateResponse(document_id=document.document_id, file_name=document.file_name, parse_status=document.parse_status))
     except Exception as exc:
         _handle_app_error(exc)
@@ -663,6 +727,45 @@ def list_visible_public_refs(db: Session = Depends(get_db), user=Depends(get_cur
     return APIResponse(data=visible)
 
 
+@router.get("/knowledge/metadata", response_model=APIResponse[list[KnowledgeMetadataRead]])
+def list_visible_knowledge_metadata(status: str | None = None, document_id: str | None = None, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    items = KnowledgeAdminService(db).list_metadata(status=status, document_id=document_id, include_archived=False)
+    access = DocumentAccessService(db)
+    visible = []
+    for item in items:
+        document = db.get(Document, item.document_id)
+        if document is None:
+            continue
+        if access.can_access_document(document, user).can_access:
+            visible.append(item)
+    return APIResponse(data=[_metadata_response(item) for item in visible])
+
+
+@router.post("/knowledge/suggestions", response_model=APIResponse[PublicKnowledgeSuggestionRead])
+def create_public_knowledge_suggestion(payload: PublicKnowledgeSuggestionCreate, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    try:
+        service = KnowledgeSuggestionService(db)
+        item = service.create_suggestion(payload, requester=user)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="create_public_knowledge_suggestion",
+            resource_type="public_knowledge_suggestion",
+            resource_id=item.suggestion_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"document_id": item.document_id, "suggestion_type": item.suggestion_type},
+        )
+        return APIResponse(data=_suggestion_response(item, service))
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
+@router.get("/knowledge/suggestions/my", response_model=APIResponse[list[PublicKnowledgeSuggestionRead]])
+def list_my_public_knowledge_suggestions(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    service = KnowledgeSuggestionService(db)
+    items = service.list_my_suggestions(user)
+    return APIResponse(data=[_suggestion_response(item, service) for item in items])
+
+
 @router.get("/admin/publish-requests", response_model=APIResponse[list[KnowledgePublishRequestRead]])
 def list_admin_publish_requests(status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"), db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
     service = KnowledgePublishService(db)
@@ -684,6 +787,31 @@ def review_publish_request(request_id: str, payload: KnowledgePublishReviewReque
             payload={"status": item.status, "document_id": item.document_id},
         )
         return APIResponse(data=_publish_request_response(item, service))
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
+@router.get("/admin/knowledge-suggestions", response_model=APIResponse[list[PublicKnowledgeSuggestionRead]])
+def list_admin_knowledge_suggestions(status: str | None = Query(default=None, pattern="^(pending|accepted|rejected|need_more_info)$"), db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
+    service = KnowledgeSuggestionService(db)
+    items = service.list_suggestions(status=status)
+    return APIResponse(data=[_suggestion_response(item, service) for item in items])
+
+
+@router.post("/admin/knowledge-suggestions/{suggestion_id}/review", response_model=APIResponse[PublicKnowledgeSuggestionRead])
+def review_admin_knowledge_suggestion(suggestion_id: str, payload: PublicKnowledgeSuggestionReview, request: Request, db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
+    try:
+        service = KnowledgeSuggestionService(db)
+        item = service.review_suggestion(suggestion_id, payload, reviewer=user)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="review_public_knowledge_suggestion",
+            resource_type="public_knowledge_suggestion",
+            resource_id=item.suggestion_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"document_id": item.document_id, "status": item.status},
+        )
+        return APIResponse(data=_suggestion_response(item, service))
     except Exception as exc:
         _handle_app_error(exc)
 
@@ -954,7 +1082,7 @@ def list_knowledge_metadata(status: str | None = None, document_id: str | None =
             continue
         if access.can_access_document(document, user).can_access:
             visible.append(item)
-    return APIResponse(data=[KnowledgeMetadataRead(knowledge_id=item.knowledge_id, document_id=item.document_id, title=item.title, author=item.author, knowledge_type=item.knowledge_type, version=item.version, status=item.status, source_type=item.source_type, acl_json=item.acl_json, is_archived=bool(item.is_archived), deleted_at=item.deleted_at, created_at=item.created_at, updated_at=item.updated_at) for item in visible])
+    return APIResponse(data=[_metadata_response(item) for item in visible])
 
 
 @router.get("/admin/skills", response_model=APIResponse[list[SkillDescriptor]])

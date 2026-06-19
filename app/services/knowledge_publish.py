@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import NotFoundAppError, PermissionAppError, ValidationAppError
 from app.models.core import User
-from app.models.document import Document, KnowledgePublishRequest, PublicKnowledgeRef
-from app.schemas.knowledge import KnowledgePublishRequestCreate
+from app.models.document import Document, KnowledgePublishRequest, PublicKnowledgeRef, PublicKnowledgeSuggestion
+from app.schemas.knowledge import KnowledgePublishRequestCreate, PublicKnowledgeSuggestionCreate, PublicKnowledgeSuggestionReview
+from app.services.access_control import DocumentAccessService
 from app.services.auth import AuthenticatedUser
 
 
@@ -182,3 +183,67 @@ class KnowledgePublishService:
         )
         self.db.add(ref)
         return ref
+
+
+class KnowledgeSuggestionService:
+    def __init__(self, db: Session, access: DocumentAccessService | None = None) -> None:
+        self.db = db
+        self.access = access or DocumentAccessService(db)
+
+    def create_suggestion(self, payload: PublicKnowledgeSuggestionCreate, requester: AuthenticatedUser) -> PublicKnowledgeSuggestion:
+        document = self.db.get(Document, payload.document_id)
+        if document is None:
+            raise NotFoundAppError("文档不存在")
+        decision = self.access.can_access_document(document, requester)
+        if not decision.can_access:
+            raise PermissionAppError(decision.reason)
+        if not decision.public_ref_id:
+            raise ValidationAppError("只能对公有知识提交建议")
+
+        item = PublicKnowledgeSuggestion(
+            suggestion_id=str(uuid.uuid4()),
+            document_id=document.document_id,
+            public_ref_id=decision.public_ref_id,
+            requester_id=requester.user_id,
+            suggestion_type=payload.suggestion_type.strip(),
+            question=payload.question.strip(),
+            suggestion=payload.suggestion.strip(),
+            business_impact=payload.business_impact.strip(),
+            status="pending",
+        )
+        self.db.add(item)
+        self.db.commit()
+        self.db.refresh(item)
+        return item
+
+    def list_my_suggestions(self, requester: AuthenticatedUser) -> list[PublicKnowledgeSuggestion]:
+        stmt = select(PublicKnowledgeSuggestion).where(PublicKnowledgeSuggestion.requester_id == requester.user_id).order_by(PublicKnowledgeSuggestion.created_at.desc())
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_suggestions(self, status: str | None = None) -> list[PublicKnowledgeSuggestion]:
+        stmt = select(PublicKnowledgeSuggestion).order_by(PublicKnowledgeSuggestion.created_at.desc())
+        if status:
+            stmt = stmt.where(PublicKnowledgeSuggestion.status == status)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def review_suggestion(self, suggestion_id: str, payload: PublicKnowledgeSuggestionReview, reviewer: AuthenticatedUser) -> PublicKnowledgeSuggestion:
+        if not {"admin", "reviewer"}.intersection(set(reviewer.roles)):
+            raise PermissionAppError("只有管理员或审核员可以处理公有知识建议")
+        item = self.db.get(PublicKnowledgeSuggestion, suggestion_id)
+        if item is None:
+            raise NotFoundAppError("公有知识建议不存在")
+        if item.status != "pending":
+            raise ValidationAppError("已处理的建议不能重复处理")
+        item.status = payload.status
+        item.review_comment = payload.review_comment.strip()
+        item.reviewed_by = reviewer.user_id
+        item.reviewed_at = datetime.now(timezone.utc)
+        self.db.commit()
+        self.db.refresh(item)
+        return item
+
+    def get_context(self, item: PublicKnowledgeSuggestion) -> dict[str, object | None]:
+        return {
+            "document": self.db.get(Document, item.document_id),
+            "requester": self.db.get(User, item.requester_id),
+        }

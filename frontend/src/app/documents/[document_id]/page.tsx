@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { RefreshCw, FileText, ListChecks, ShieldCheck, PencilLine, ArrowRight, ArrowLeft } from 'lucide-react';
 import { knowledgeSpaceLabel, knowledgeTypeLabel, metadataStatusLabel, parseStatusLabel, publishStatusLabel, sourceTypeLabel, taskStatusLabel, taskTypeLabel, visibilityLabel } from '@/lib/display-labels';
 
@@ -68,6 +69,13 @@ type TaskItem = {
   updated_at?: string | null;
 };
 
+type SuggestionDraft = {
+  suggestion_type: string;
+  question: string;
+  suggestion: string;
+  business_impact: string;
+};
+
 function getToken() {
   return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
 }
@@ -108,11 +116,24 @@ async function fetchTasks(documentId: string) {
 }
 
 async function fetchMetadata(documentId: string) {
-  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata`);
+  const res = await authedFetch(`${API_BASE}/api/v1/knowledge/metadata?document_id=${encodeURIComponent(documentId)}`);
   if (!res.ok) throw new Error('加载知识元数据失败');
   const json = await res.json();
   const items = json.data as KnowledgeMetadata[];
   return items.filter((item) => item.document_id === documentId);
+}
+
+async function submitPublicKnowledgeSuggestion(documentId: string, draft: SuggestionDraft) {
+  const res = await authedFetch(`${API_BASE}/api/v1/knowledge/suggestions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document_id: documentId, ...draft }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '提交建议失败');
+  }
+  return res.json();
 }
 
 export default function DocumentDetailPage({ params }: { params: Promise<{ document_id: string }> }) {
@@ -126,6 +147,14 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
   const [loading, setLoading] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [rawText, setRawText] = useState<string | null>(null);
+  const [suggestionOpen, setSuggestionOpen] = useState(false);
+  const [suggestionSubmitting, setSuggestionSubmitting] = useState(false);
+  const [suggestionDraft, setSuggestionDraft] = useState<SuggestionDraft>({
+    suggestion_type: 'missing_steps',
+    question: '',
+    suggestion: '',
+    business_impact: '',
+  });
 
   useEffect(() => {
     let mounted = true;
@@ -429,6 +458,11 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
                   <Badge>{knowledgeSpaceLabel(effectiveKnowledgeSpace(detail))}</Badge>
                   <Badge>{publishStatusLabel(detail.publish_status || 'none')}</Badge>
                 </div>
+                {(detail.public_ref_id || effectiveKnowledgeSpace(detail) === 'public') ? (
+                  <Button variant="outline" onClick={() => setSuggestionOpen(true)}>
+                    提出问题或修改建议
+                  </Button>
+                ) : null}
                 {detail.public_ref_id && detail.knowledge_space === 'personal' ? (
                   <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-3 text-xs text-[color:var(--muted)]">
                     当前通过公有知识引用访问，原始文档仍属于{knowledgeSpaceLabel(detail.knowledge_space)}。
@@ -551,6 +585,74 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
             </CardContent>
           </Card>
         </>
+      )}
+
+      {detail && suggestionOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+          <div className="w-full max-w-xl rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold text-slate-950">提出问题或修改建议</div>
+                <div className="mt-1 text-sm text-slate-600">{detail.file_name}</div>
+              </div>
+              <Button variant="ghost" onClick={() => setSuggestionOpen(false)}>关闭</Button>
+            </div>
+            <div className="mt-5 space-y-4">
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">建议类型</div>
+                <select
+                  value={suggestionDraft.suggestion_type}
+                  onChange={(event) => setSuggestionDraft((draft) => ({ ...draft, suggestion_type: event.target.value }))}
+                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900"
+                >
+                  <option value="content_error">内容错误</option>
+                  <option value="outdated">内容过期</option>
+                  <option value="missing_steps">缺少步骤</option>
+                  <option value="unclear">表述不清</option>
+                  <option value="other">其他</option>
+                </select>
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">问题描述</div>
+                <Textarea value={suggestionDraft.question} onChange={(event) => setSuggestionDraft((draft) => ({ ...draft, question: event.target.value }))} placeholder="说明你在阅读或使用这条公有知识时遇到的问题" className="bg-white text-slate-900 placeholder:text-slate-400" />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">建议修改内容</div>
+                <Textarea value={suggestionDraft.suggestion} onChange={(event) => setSuggestionDraft((draft) => ({ ...draft, suggestion: event.target.value }))} placeholder="写出你建议补充、删除或改写的内容" className="bg-white text-slate-900 placeholder:text-slate-400" />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-800">业务影响</div>
+                <Textarea value={suggestionDraft.business_impact} onChange={(event) => setSuggestionDraft((draft) => ({ ...draft, business_impact: event.target.value }))} placeholder="说明该问题会影响哪些工作场景" className="bg-white text-slate-900 placeholder:text-slate-400" />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setSuggestionOpen(false)}>取消</Button>
+                <Button
+                  disabled={suggestionSubmitting || !suggestionDraft.question.trim() || !suggestionDraft.suggestion.trim() || !suggestionDraft.business_impact.trim()}
+                  onClick={async () => {
+                    try {
+                      setSuggestionSubmitting(true);
+                      await submitPublicKnowledgeSuggestion(detail.document_id, {
+                        suggestion_type: suggestionDraft.suggestion_type,
+                        question: suggestionDraft.question.trim(),
+                        suggestion: suggestionDraft.suggestion.trim(),
+                        business_impact: suggestionDraft.business_impact.trim(),
+                      });
+                      alert('建议已提交，等待审核员处理。');
+                      setSuggestionDraft({ suggestion_type: 'missing_steps', question: '', suggestion: '', business_impact: '' });
+                      setSuggestionOpen(false);
+                    } catch (error) {
+                      alert(error instanceof Error ? error.message : '提交建议失败');
+                    } finally {
+                      setSuggestionSubmitting(false);
+                    }
+                  }}
+                >
+                  {suggestionSubmitting ? '提交中...' : '提交建议'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

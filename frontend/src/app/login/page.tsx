@@ -93,7 +93,7 @@ export default function LoginPage() {
 
       <div className="relative mx-auto grid min-h-screen max-w-6xl gap-8 px-6 py-10 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
         <section className="space-y-8">
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm text-blue-100 shadow-lg backdrop-blur">
+          <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-sm text-blue-100 backdrop-blur">
             <Building2 size={16} />
             企业内部知识管理平台
           </div>
@@ -106,9 +106,9 @@ export default function LoginPage() {
             </p>
           </div>
           <div className="grid gap-3 text-sm text-slate-200 md:grid-cols-3">
-            <div className="rounded-2xl border border-white/10 bg-white/8 p-4 shadow-lg backdrop-blur">员工身份认证</div>
-            <div className="rounded-2xl border border-white/10 bg-white/8 p-4 shadow-lg backdrop-blur">首次登录改密</div>
-            <div className="rounded-2xl border border-white/10 bg-white/8 p-4 shadow-lg backdrop-blur">角色与权限审计</div>
+            <div className="rounded-xl bg-white/6 px-4 py-3 backdrop-blur">员工身份认证</div>
+            <div className="rounded-xl bg-white/6 px-4 py-3 backdrop-blur">首次登录改密</div>
+            <div className="rounded-xl bg-white/6 px-4 py-3 backdrop-blur">角色与权限审计</div>
           </div>
         </section>
 

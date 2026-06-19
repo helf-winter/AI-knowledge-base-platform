@@ -69,6 +69,26 @@ type PublishRequest = {
   created_at?: string | null;
 };
 
+type KnowledgeSuggestion = {
+  suggestion_id: string;
+  document_id: string;
+  document_name?: string | null;
+  public_ref_id?: string | null;
+  requester_id: string;
+  requester_name?: string | null;
+  requester_employee_no?: string | null;
+  suggestion_type: string;
+  question: string;
+  suggestion: string;
+  business_impact: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'need_more_info';
+  reviewed_by?: string | null;
+  review_comment?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 function getToken() {
   return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
 }
@@ -129,6 +149,28 @@ async function reviewPublishRequest(requestId: string, approve: boolean, reviewC
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '提交发布审核失败');
+  }
+  return res.json();
+}
+
+async function fetchKnowledgeSuggestions(status: string) {
+  const url = new URL(`${API_BASE}/api/v1/admin/knowledge-suggestions`);
+  if (status) url.searchParams.set('status', status);
+  const res = await authedFetch(url.toString());
+  if (!res.ok) throw new Error(res.status === 403 ? '当前账号无权访问公有知识建议' : '加载公有知识建议失败');
+  const json = await res.json();
+  return (json.data ?? []) as KnowledgeSuggestion[];
+}
+
+async function reviewKnowledgeSuggestion(suggestionId: string, status: 'accepted' | 'rejected' | 'need_more_info', reviewComment: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-suggestions/${suggestionId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status, review_comment: reviewComment }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '处理公有知识建议失败');
   }
   return res.json();
 }
@@ -200,6 +242,24 @@ function statusLabel(status: string) {
   return reviewStatusLabel(status);
 }
 
+function suggestionStatusLabel(status: string) {
+  if (status === 'accepted') return '已采纳';
+  if (status === 'rejected') return '暂不采纳';
+  if (status === 'need_more_info') return '需补充';
+  return '待处理';
+}
+
+function suggestionTypeLabel(type: string) {
+  const labels: Record<string, string> = {
+    content_error: '内容错误',
+    outdated: '内容过期',
+    missing_steps: '缺少步骤',
+    unclear: '表述不清',
+    other: '其他',
+  };
+  return labels[type] || type;
+}
+
 function suggestionLabel(suggestion?: string | null) {
   return suggestion ? displaySuggestionLabel(suggestion) : '尚未生成';
 }
@@ -225,6 +285,12 @@ export default function AdminPage() {
   const [publishLoading, setPublishLoading] = useState(false);
   const [publishReviewingId, setPublishReviewingId] = useState<string | null>(null);
   const [publishReviewComment, setPublishReviewComment] = useState('');
+  const [knowledgeSuggestions, setKnowledgeSuggestions] = useState<KnowledgeSuggestion[]>([]);
+  const [suggestionStatus, setSuggestionStatus] = useState('pending');
+  const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const [suggestionReviewingId, setSuggestionReviewingId] = useState<string | null>(null);
+  const [suggestionReviewComment, setSuggestionReviewComment] = useState('');
 
   const [items, setItems] = useState<KnowledgeMetadata[]>([]);
   const [loading, setLoading] = useState(false);
@@ -235,6 +301,7 @@ export default function AdminPage() {
 
   const selectedRequest = useMemo(() => requests.find((item) => item.request_id === selectedRequestId) ?? requests[0] ?? null, [requests, selectedRequestId]);
   const selectedPublishRequest = useMemo(() => publishRequests.find((item) => item.request_id === selectedPublishId) ?? publishRequests[0] ?? null, [publishRequests, selectedPublishId]);
+  const selectedSuggestion = useMemo(() => knowledgeSuggestions.find((item) => item.suggestion_id === selectedSuggestionId) ?? knowledgeSuggestions[0] ?? null, [knowledgeSuggestions, selectedSuggestionId]);
   const filtered = useMemo(() => items.filter((item) => !filter || item.status === filter), [items, filter]);
 
   const loadRequests = async () => {
@@ -274,8 +341,22 @@ export default function AdminPage() {
     }
   };
 
+  const loadKnowledgeSuggestions = async () => {
+    setSuggestionLoading(true);
+    try {
+      const data = await fetchKnowledgeSuggestions(suggestionStatus);
+      setKnowledgeSuggestions(data);
+      setSelectedSuggestionId(data[0]?.suggestion_id ?? null);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '加载公有知识建议失败');
+    } finally {
+      setSuggestionLoading(false);
+    }
+  };
+
   useEffect(() => { void loadRequests(); }, [requestStatus]);
   useEffect(() => { void loadPublishRequests(); }, [publishStatus]);
+  useEffect(() => { void loadKnowledgeSuggestions(); }, [suggestionStatus]);
   useEffect(() => { void loadMetadata(); }, [filter, documentFilter]);
 
   return (
@@ -441,6 +522,125 @@ export default function AdminPage() {
               </>
             ) : (
               <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">请选择左侧申请查看详情。</div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100 pb-4">
+            <CardTitle className="flex items-center gap-2 text-base text-slate-900"><PencilLine size={16} /> 公有知识建议处理</CardTitle>
+            <CardDescription className="text-slate-700">普通员工不能直接修改公有知识，但可以提交问题和修改建议给审核员处理。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            <div className="flex flex-wrap gap-2">
+              {['pending', 'accepted', 'rejected', 'need_more_info'].map((item) => (
+                <Button key={item} size="sm" variant={suggestionStatus === item ? 'default' : 'outline'} onClick={() => setSuggestionStatus(item)}>
+                  {suggestionStatusLabel(item)}
+                </Button>
+              ))}
+              <Button variant="outline" size="sm" onClick={() => void loadKnowledgeSuggestions()} disabled={suggestionLoading}>
+                <RefreshCw size={14} className={suggestionLoading ? 'animate-spin' : ''} /> 刷新
+              </Button>
+            </div>
+            {knowledgeSuggestions.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">当前状态下暂无公有知识建议。</div>
+            ) : (
+              <div className="space-y-3">
+                {knowledgeSuggestions.map((item) => (
+                  <button
+                    key={item.suggestion_id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSuggestionId(item.suggestion_id);
+                      setSuggestionReviewComment(item.review_comment || '');
+                    }}
+                    className={`w-full rounded-xl border p-4 text-left transition ${selectedSuggestion?.suggestion_id === item.suggestion_id ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'}`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-slate-950">{item.document_name || item.document_id}</div>
+                        <div className="mt-1 text-xs text-slate-600">{item.requester_name || item.requester_id} · {item.requester_employee_no || '-'}</div>
+                      </div>
+                      <Badge className="bg-white text-slate-700 hover:bg-white">{suggestionStatusLabel(item.status)}</Badge>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
+                      <span>类型：{suggestionTypeLabel(item.suggestion_type)}</span>
+                      <span>提交：{item.created_at || '-'}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100 pb-4">
+            <CardTitle className="flex items-center gap-2 text-base text-slate-900"><FileText size={16} /> 建议详情</CardTitle>
+            <CardDescription className="text-slate-700">审核员只处理建议状态，不会自动修改公有知识正文。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            {selectedSuggestion ? (
+              <>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">提交人：{selectedSuggestion.requester_name || '-'}（{selectedSuggestion.requester_employee_no || '-'}）</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">状态：{suggestionStatusLabel(selectedSuggestion.status)}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700 md:col-span-2">文档：{selectedSuggestion.document_name || selectedSuggestion.document_id}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">建议类型：{suggestionTypeLabel(selectedSuggestion.suggestion_type)}</div>
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">公有引用：{selectedSuggestion.public_ref_id || '-'}</div>
+                </div>
+                <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+                  <div>
+                    <div className="text-xs font-medium text-slate-500">问题描述</div>
+                    <p className="mt-1 text-sm leading-7 text-slate-900">{selectedSuggestion.question}</p>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-slate-500">建议修改内容</div>
+                    <p className="mt-1 text-sm leading-7 text-slate-900">{selectedSuggestion.suggestion}</p>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-slate-500">业务影响</div>
+                    <p className="mt-1 text-sm leading-7 text-slate-900">{selectedSuggestion.business_impact}</p>
+                  </div>
+                </div>
+                <Textarea value={suggestionReviewComment} onChange={(event) => setSuggestionReviewComment(event.target.value)} placeholder="填写处理意见，例如：采纳原因、暂不采纳原因，或需要用户补充什么信息" className="bg-white text-slate-900 placeholder:text-slate-400" />
+                <div className="flex flex-wrap gap-2">
+                  <Button asChild variant="outline">
+                    <Link href={`/documents/${selectedSuggestion.document_id}`}>
+                      <ArrowRight size={14} /> 查看文档
+                    </Link>
+                  </Button>
+                  {(['accepted', 'need_more_info', 'rejected'] as const).map((status) => (
+                    <Button
+                      key={status}
+                      variant={status === 'rejected' ? 'destructive' : 'default'}
+                      disabled={selectedSuggestion.status !== 'pending' || suggestionReviewingId === selectedSuggestion.suggestion_id || !suggestionReviewComment.trim()}
+                      onClick={async () => {
+                        try {
+                          setSuggestionReviewingId(selectedSuggestion.suggestion_id);
+                          await reviewKnowledgeSuggestion(selectedSuggestion.suggestion_id, status, suggestionReviewComment.trim());
+                          await loadKnowledgeSuggestions();
+                        } catch (error) {
+                          alert(error instanceof Error ? error.message : '处理公有知识建议失败');
+                        } finally {
+                          setSuggestionReviewingId(null);
+                        }
+                      }}
+                    >
+                      {suggestionStatusLabel(status)}
+                    </Button>
+                  ))}
+                </div>
+                {selectedSuggestion.status !== 'pending' && (
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+                    已处理：{selectedSuggestion.reviewed_at || '-'}；意见：{selectedSuggestion.review_comment || '-'}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">请选择左侧建议查看详情。</div>
             )}
           </CardContent>
         </Card>

@@ -22,7 +22,7 @@ from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapReview, Learnin
 from app.schemas.knowledge import KnowledgePublishRequestCreate
 from app.schemas.review import ReviewRequest
 from app.services.auth import AuthenticatedUser
-from app.services.embedding import fake_embedding
+from app.services.embedding import EmbeddingService
 from app.services.knowledge_publish import KnowledgePublishService
 from app.services.storage import calculate_sha256
 
@@ -31,6 +31,7 @@ settings = get_settings()
 class KnowledgeFlywheelService:
     def __init__(self, db: Session) -> None:
         self.db = db
+        self.embedding = EmbeddingService()
 
     def create_gap(self, payload: KnowledgeGapCreate) -> KnowledgeGap:
         normalized_question = self.normalize_gap_question(payload.query_text)
@@ -506,12 +507,12 @@ class KnowledgeFlywheelService:
         )
         self.db.add(chunk)
         self.db.flush()
-        vector = fake_embedding(chunk_text)
+        vector = self.embedding.embed_text(chunk_text)
         self.db.add(
             ChunkEmbedding(
                 embedding_id=str(uuid.uuid4()),
                 chunk_id=chunk.chunk_id,
-                embedding_model="bge-m3",
+                embedding_model=self.embedding.model_name,
                 dimension=len(vector),
                 vector=vector,
             )

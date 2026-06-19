@@ -89,7 +89,7 @@ async function fetchAgents() {
 }
 
 async function fetchMetadata() {
-  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-metadata`);
+  const res = await authedFetch(`${API_BASE}/api/v1/knowledge/metadata`);
   if (!res.ok) throw new Error('加载知识条目失败');
   const json = await res.json();
   return json.data as KnowledgeMetadata[];

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Clock3, FileText, FileUp, LockKeyhole, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, UploadCloud } from 'lucide-react';
+import { ArrowRight, Clock3, FileText, FileUp, LockKeyhole, PenLine, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, UploadCloud } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -100,6 +100,15 @@ type MyPublishRequest = {
   created_at?: string | null;
 };
 
+type ManualKnowledgeDraft = {
+  title: string;
+  knowledge_category: string;
+  allowed_job_categories: string;
+  business_purpose: string;
+  tags: string;
+  content: string;
+};
+
 const FILE_HINTS: Record<string, string> = {
   pdf: 'PDF 文档',
   docx: 'Word 文档',
@@ -112,6 +121,9 @@ const FILE_HINTS: Record<string, string> = {
   xlsx: 'Excel 表格',
   xls: 'Excel 表格',
 };
+
+const PUBLISH_CATEGORY_OPTIONS = ['VPN相关', 'IT流程', '制度规范', '研发知识', '业务操作', '数据处理', '外观设计', '其他'];
+const JOB_CATEGORY_OPTIONS = ['全公司', '研发工程师', '信息技术部', '数据处理部门', '外观设计类', '行政人事', '财务人员', '部门内部'];
 
 function getToken() {
   return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
@@ -157,6 +169,19 @@ async function uploadDocument(file: File) {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '上传失败');
+  }
+  return res.json();
+}
+
+async function createManualKnowledge(draft: ManualKnowledgeDraft) {
+  const res = await authedFetch(`${API_BASE}/api/v1/documents/manual`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(draft),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '保存手动知识失败');
   }
   return res.json();
 }
@@ -261,6 +286,15 @@ export default function DocumentsPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [manualDraft, setManualDraft] = useState<ManualKnowledgeDraft>({
+    title: '',
+    knowledge_category: '经验总结',
+    allowed_job_categories: '全公司',
+    business_purpose: '',
+    tags: '',
+    content: '',
+  });
+  const [manualSaving, setManualSaving] = useState(false);
   const [query, setQuery] = useState('');
   const [spaceFilter, setSpaceFilter] = useState('all');
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
@@ -390,10 +424,21 @@ export default function DocumentsPage() {
 
   const openPublishDialog = (target: PublishRequestTarget) => {
     setPublishTarget(target);
-    setTargetCategory('');
+    setTargetCategory(PUBLISH_CATEGORY_OPTIONS[0]);
     setAllowedJobCategories('全公司');
     setPublishReason('该个人知识已经整理完成，希望发布到公有知识库供团队复用。');
     setPublishBusinessPurpose('');
+  };
+
+  const resetManualDraft = () => {
+    setManualDraft({
+      title: '',
+      knowledge_category: '经验总结',
+      allowed_job_categories: '全公司',
+      business_purpose: '',
+      tags: '',
+      content: '',
+    });
   };
 
   const canPublishDocument = (doc: DocumentItem | null) =>
@@ -679,7 +724,81 @@ export default function DocumentsPage() {
                   <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> 刷新列表
                 </Button>
               </div>
-              <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-600">图片和表格会尝试进行基础 OCR / 结构化抽取。上传文档默认是私有文档，只有创建者和管理员可阅读。</div>
+              <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-600">图片和表格会尝试进行基础 OCR / 结构化抽取。上传文档默认进入个人知识空间，只有创建者可直接阅读。</div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-slate-200 bg-white shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base text-slate-950"><PenLine size={16} /> 手动记录知识</CardTitle>
+              <CardDescription className="text-slate-700">把经验、流程、排障结论直接写成 Markdown 知识，默认保存到个人知识空间。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Input
+                value={manualDraft.title}
+                onChange={(event) => setManualDraft((draft) => ({ ...draft, title: event.target.value }))}
+                placeholder="标题，例如：VPN 申请经验"
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input
+                  value={manualDraft.knowledge_category}
+                  onChange={(event) => setManualDraft((draft) => ({ ...draft, knowledge_category: event.target.value }))}
+                  placeholder="知识类别，例如：IT 流程"
+                />
+                <Input
+                  value={manualDraft.allowed_job_categories}
+                  onChange={(event) => setManualDraft((draft) => ({ ...draft, allowed_job_categories: event.target.value }))}
+                  placeholder="适用人员，例如：全公司"
+                />
+              </div>
+              <Input
+                value={manualDraft.business_purpose}
+                onChange={(event) => setManualDraft((draft) => ({ ...draft, business_purpose: event.target.value }))}
+                placeholder="业务用途，例如：减少 VPN 申请咨询成本"
+              />
+              <Input
+                value={manualDraft.tags}
+                onChange={(event) => setManualDraft((draft) => ({ ...draft, tags: event.target.value }))}
+                placeholder="标签，用逗号分隔，例如：VPN,权限申请,远程办公"
+              />
+              <Textarea
+                value={manualDraft.content}
+                onChange={(event) => setManualDraft((draft) => ({ ...draft, content: event.target.value }))}
+                placeholder={'用 Markdown 写正文，例如：\n## 适用场景\n员工需要远程访问内网系统。\n\n## 操作步骤\n1. 在 IT 服务台提交申请。\n2. 等待审批通过。'}
+                className="min-h-48 bg-white text-slate-900 placeholder:text-slate-400"
+              />
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button variant="outline" onClick={resetManualDraft} disabled={manualSaving}>
+                  清空
+                </Button>
+                <Button
+                  disabled={manualSaving || !manualDraft.title.trim() || !manualDraft.knowledge_category.trim() || !manualDraft.content.trim()}
+                  onClick={async () => {
+                    try {
+                      setManualSaving(true);
+                      const result = await createManualKnowledge({
+                        title: manualDraft.title.trim(),
+                        knowledge_category: manualDraft.knowledge_category.trim(),
+                        allowed_job_categories: manualDraft.allowed_job_categories.trim(),
+                        business_purpose: manualDraft.business_purpose.trim(),
+                        tags: manualDraft.tags.trim(),
+                        content: manualDraft.content.trim(),
+                      });
+                      await load();
+                      resetManualDraft();
+                      const documentId = result?.data?.document_id;
+                      if (documentId) router.push(`/documents/${documentId}`);
+                    } catch (error) {
+                      alert(error instanceof Error ? error.message : '保存手动知识失败');
+                    } finally {
+                      setManualSaving(false);
+                    }
+                  }}
+                >
+                  {manualSaving ? '保存中...' : '保存为个人知识'}
+                </Button>
+              </div>
+              <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-800">保存后可以在左侧文档列表中找到它，也可以像上传文档一样提交“公有发布审核”。</div>
             </CardContent>
           </Card>
 
@@ -899,11 +1018,27 @@ export default function DocumentsPage() {
             <div className="mt-5 space-y-4">
               <div>
                 <div className="mb-2 text-sm font-medium text-slate-800">希望划分的知识类别</div>
-                <Input value={targetCategory} onChange={(event) => setTargetCategory(event.target.value)} placeholder="例如：IT流程、制度规范、研发知识" />
+                <select
+                  value={targetCategory}
+                  onChange={(event) => setTargetCategory(event.target.value)}
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                >
+                  {PUBLISH_CATEGORY_OPTIONS.map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <div className="mb-2 text-sm font-medium text-slate-800">可访问人员工作类别</div>
-                <Input value={allowedJobCategories} onChange={(event) => setAllowedJobCategories(event.target.value)} placeholder="例如：全公司、研发工程师、信息技术部" />
+                <select
+                  value={allowedJobCategories}
+                  onChange={(event) => setAllowedJobCategories(event.target.value)}
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                >
+                  {JOB_CATEGORY_OPTIONS.map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <div className="mb-2 text-sm font-medium text-slate-800">发布理由</div>

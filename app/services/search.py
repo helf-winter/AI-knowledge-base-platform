@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.document import Document, DocumentChunk
 from app.models.vector import ChunkEmbedding
-from app.services.embedding import cosine_similarity, fake_embedding
+from app.services.embedding import EmbeddingService
 
 
 @dataclass
@@ -20,18 +20,20 @@ class RetrievalCandidate:
 class HybridRetriever:
     def __init__(self, db: Session) -> None:
         self.db = db
+        self.embedding = EmbeddingService()
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievalCandidate]:
         """Perform a lightweight hybrid retrieval.
 
-        The implementation intentionally stays deterministic and dependency-free so
-        the project can run in local environments without external services.
+        Vector recall uses the configured embedding provider. With the default
+        local BGE model this is real semantic retrieval; keyword recall remains
+        as a safety net for exact matches.
         """
         query = query.strip()
         if not query:
             return []
 
-        qvec = fake_embedding(query)
+        qvec = self.embedding.embed_text(query)
         lowered = query.lower()
 
         # Vector recall.
@@ -69,7 +71,7 @@ class HybridRetriever:
                 candidates[chunk.chunk_id] = RetrievalCandidate(
                     chunk=chunk,
                     keyword_score=1.0,
-                    vector_score=cosine_similarity(qvec, fake_embedding(chunk.content)),
+                    vector_score=0.0,
                 )
             else:
                 candidates[chunk.chunk_id].keyword_score = 1.0

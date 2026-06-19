@@ -23,7 +23,11 @@ class Settings(BaseSettings):
     deepseek_thinking_enabled: bool = Field(default=True)
     chunk_size_tokens: int = 512
     chunk_overlap_tokens: int = 100
-    embedding_dimension: int = 64
+    embedding_provider: str = Field(default="bge")
+    embedding_model_path: str = Field(default="D:/code/models/bge-m3")
+    embedding_device: str = Field(default="cpu")
+    embedding_batch_size: int = 16
+    embedding_dimension: int = 1024
     max_upload_size_mb: int = 20
     tesseract_cmd: str | None = Field(default=None)
 

@@ -9,6 +9,15 @@ class DocumentCreateResponse(BaseModel):
     parse_status: str
 
 
+class ManualKnowledgeCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=50000)
+    knowledge_category: str = Field(default="manual", min_length=1, max_length=128)
+    allowed_job_categories: str | None = Field(default=None, max_length=1000)
+    business_purpose: str | None = Field(default=None, max_length=1000)
+    tags: str | None = Field(default=None, max_length=500)
+
+
 class DocumentItem(BaseModel):
     document_id: str
     owner_user_id: str | None = None
@@ -237,3 +246,36 @@ class PublicKnowledgeRefRead(BaseModel):
     disabled_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class PublicKnowledgeSuggestionCreate(BaseModel):
+    document_id: str = Field(min_length=1, max_length=36)
+    suggestion_type: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1, max_length=2000)
+    suggestion: str = Field(min_length=1, max_length=5000)
+    business_impact: str = Field(min_length=1, max_length=2000)
+
+
+class PublicKnowledgeSuggestionRead(BaseModel):
+    suggestion_id: str
+    document_id: str
+    document_name: str | None = None
+    public_ref_id: str | None = None
+    requester_id: str
+    requester_name: str | None = None
+    requester_employee_no: str | None = None
+    suggestion_type: str
+    question: str
+    suggestion: str
+    business_impact: str
+    status: str
+    reviewed_by: str | None = None
+    review_comment: str | None = None
+    reviewed_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class PublicKnowledgeSuggestionReview(BaseModel):
+    status: str = Field(pattern="^(accepted|rejected|need_more_info)$")
+    review_comment: str = Field(min_length=1, max_length=1000)
