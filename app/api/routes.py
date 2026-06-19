@@ -770,8 +770,8 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
 
     def event_stream():
         try:
-            recommendation = service.agent_recommender.recommend(payload.query, agent_id=payload.agent_id)
-            expert_stream, refs, _traces = service.stream_answer(query=payload.query, top_k=5, user_id=user.user_id, casual=False)
+            agent_context = service.resolve_agent_context(payload.query, agent_id=payload.agent_id)
+            expert_stream, refs, _traces = service.stream_answer(query=payload.query, top_k=5, user_id=user.user_id, casual=False, agent_context=agent_context)
             expert_answer = "".join(chunk for chunk in expert_stream if chunk)
             should_fallback = (not refs) or _looks_like_unknown_answer(expert_answer)
             answer_stream = None
@@ -851,9 +851,9 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
                 resource_type="conversation",
                 resource_id=session_id,
                 trace_id=trace_id,
-                payload={"query": payload.query, "mode": mode, "chunk_count": len(visible_refs), "answer_empty": not bool(collected.strip()), "can_expand": can_expand},
+                payload={"query": payload.query, "mode": mode, "chunk_count": len(visible_refs), "answer_empty": not bool(collected.strip()), "can_expand": can_expand, "agent_id": agent_context.agent_id if agent_context else None},
             )
-            yield f"data: {json.dumps({'confidence': confidence, 'chunk_count': hits_count, 'trace_id': trace_id, 'session_id': session_id, 'mode': mode, 'can_expand': can_expand, 'expansion_question': '是否扩充该知识内容？' if can_expand else None, 'sources': source_documents, 'recommended_agent_id': recommendation.agent_id if recommendation else None, 'recommended_agent_name': recommendation.agent_name if recommendation else None, 'recommended_reason': recommendation.reason if recommendation else None}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'confidence': confidence, 'chunk_count': hits_count, 'trace_id': trace_id, 'session_id': session_id, 'mode': mode, 'can_expand': can_expand, 'expansion_question': '是否扩充该知识内容？' if can_expand else None, 'sources': source_documents, 'recommended_agent_id': agent_context.agent_id if agent_context else None, 'recommended_agent_name': agent_context.agent_name if agent_context else None, 'recommended_reason': agent_context.selection_reason if agent_context else None, 'active_agent_id': agent_context.agent_id if agent_context else None, 'active_agent_name': agent_context.agent_name if agent_context else None, 'active_agent_reason': agent_context.selection_reason if agent_context else None, 'active_agent_skills': agent_context.skills if agent_context else []}, ensure_ascii=False)}\n\n"
         except Exception as exc:
             try:
                 db.rollback()
@@ -880,9 +880,13 @@ def chat_stream(payload: ChatRequest, db: Session = Depends(get_db), user=Depend
 
 @router.post("/feedback", response_model=APIResponse[dict[str, Any]])
 def create_feedback(payload: FeedbackCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    feedback = KnowledgeService(db).record_feedback(session_id=payload.session_id, answer_id=payload.answer_id, rating=payload.rating, is_helpful=payload.is_helpful, comment=payload.comment, issue_type=payload.issue_type, user_id=user.user_id)
-    AuditService(db).record(user_id=user.user_id, action="feedback", resource_type="feedback", resource_id=feedback.feedback_id, trace_id=payload.session_id, payload=payload.model_dump())
-    return APIResponse(data={"feedback_id": feedback.feedback_id})
+    try:
+        feedback = KnowledgeService(db).record_feedback(session_id=payload.session_id, answer_id=payload.answer_id, rating=payload.rating, is_helpful=payload.is_helpful, comment=payload.comment, issue_type=payload.issue_type, user_id=user.user_id)
+        AuditService(db).record(user_id=user.user_id, action="feedback", resource_type="feedback", resource_id=feedback.feedback_id, trace_id=payload.session_id, payload=payload.model_dump())
+        return APIResponse(data={"feedback_id": feedback.feedback_id})
+    except Exception as exc:
+        db.rollback()
+        _handle_app_error(exc)
 
 
 @router.post("/knowledge/expand", response_model=APIResponse[KnowledgeExpansionResponse])

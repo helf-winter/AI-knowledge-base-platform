@@ -17,6 +17,10 @@ type StreamState = {
   mode?: string | null;
   canExpand?: boolean;
   expansionQuestion?: string | null;
+  activeAgentId?: string | null;
+  activeAgentName?: string | null;
+  activeAgentReason?: string | null;
+  activeAgentSkills?: string[];
 };
 
 type SourceDocument = {
@@ -42,9 +46,20 @@ type ChatMessage = {
   mode?: string | null;
   canExpand?: boolean;
   expansionQuestion?: string | null;
+  activeAgentId?: string | null;
+  activeAgentName?: string | null;
+  activeAgentReason?: string | null;
+  activeAgentSkills?: string[];
   expandDismissed?: boolean;
   expandResult?: ExpandResult | null;
   error?: string | null;
+};
+
+type ExpertAgentOption = {
+  agent_id: string;
+  name: string;
+  knowledge_domain: string;
+  status: string;
 };
 
 const STORAGE_KEY = 'kb_floating_assistant_messages';
@@ -62,7 +77,7 @@ function getCurrentUserId() {
   }
 }
 
-async function streamAnswer(query: string, onUpdate: (state: StreamState) => void) {
+async function streamAnswer(query: string, agentId: string | null, onUpdate: (state: StreamState) => void) {
   const token = getToken();
   const userId = getCurrentUserId() || 'anonymous';
   const sessionId = crypto.randomUUID();
@@ -72,7 +87,7 @@ async function streamAnswer(query: string, onUpdate: (state: StreamState) => voi
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ query, user_id: userId, session_id: sessionId }),
+    body: JSON.stringify({ query, user_id: userId, session_id: sessionId, agent_id: agentId || undefined }),
   });
   if (!res.ok || !res.body) throw new Error('问答失败');
 
@@ -86,7 +101,11 @@ async function streamAnswer(query: string, onUpdate: (state: StreamState) => voi
   let mode: string | null = null;
   let canExpand = false;
   let expansionQuestion: string | null = null;
-  const emit = () => onUpdate({ answer, traceId, sources, error, mode, canExpand, expansionQuestion });
+  let activeAgentId: string | null = null;
+  let activeAgentName: string | null = null;
+  let activeAgentReason: string | null = null;
+  let activeAgentSkills: string[] = [];
+  const emit = () => onUpdate({ answer, traceId, sources, error, mode, canExpand, expansionQuestion, activeAgentId, activeAgentName, activeAgentReason, activeAgentSkills });
 
   while (true) {
     const { done, value } = await reader.read();
@@ -112,6 +131,13 @@ async function streamAnswer(query: string, onUpdate: (state: StreamState) => voi
           can_expand?: boolean;
           expansion_question?: string | null;
           sources?: SourceDocument[];
+          active_agent_id?: string | null;
+          active_agent_name?: string | null;
+          active_agent_reason?: string | null;
+          active_agent_skills?: string[];
+          recommended_agent_id?: string | null;
+          recommended_agent_name?: string | null;
+          recommended_reason?: string | null;
         };
         if (typeof meta.delta === 'string') {
           answer += meta.delta;
@@ -130,6 +156,10 @@ async function streamAnswer(query: string, onUpdate: (state: StreamState) => voi
           canExpand = Boolean(meta.can_expand);
           expansionQuestion = meta.expansion_question ?? expansionQuestion;
           if (Array.isArray(meta.sources)) sources = meta.sources;
+          activeAgentId = meta.active_agent_id ?? meta.recommended_agent_id ?? activeAgentId;
+          activeAgentName = meta.active_agent_name ?? meta.recommended_agent_name ?? activeAgentName;
+          activeAgentReason = meta.active_agent_reason ?? meta.recommended_reason ?? activeAgentReason;
+          activeAgentSkills = Array.isArray(meta.active_agent_skills) ? meta.active_agent_skills : activeAgentSkills;
           emit();
           continue;
         }
@@ -138,6 +168,18 @@ async function streamAnswer(query: string, onUpdate: (state: StreamState) => voi
       emit();
     }
   }
+}
+
+async function fetchExpertAgents() {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/api/v1/admin/expert-agents`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!res.ok) return [];
+  const json = await res.json();
+  return (json.data ?? []) as ExpertAgentOption[];
 }
 
 async function expandKnowledge(query: string, answer: string, traceId: string, targetDocumentId?: string) {
@@ -218,6 +260,8 @@ export function FloatingAssistant() {
   const [query, setQuery] = useState('');
   const [expanding, setExpanding] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [agents, setAgents] = useState<ExpertAgentOption[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [launcherPosition, setLauncherPosition] = useState({ x: 0, y: 0 });
@@ -242,6 +286,7 @@ export function FloatingAssistant() {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) setMessages(JSON.parse(raw) as ChatMessage[]);
     } catch {}
+    void fetchExpertAgents().then((items) => setAgents(items.filter((item) => item.status === 'active'))).catch(() => setAgents([]));
   }, []);
 
   useEffect(() => {
@@ -344,13 +389,17 @@ export function FloatingAssistant() {
       const assistantMessage: ChatMessage = { id: assistantId, role: 'assistant', query: cleanQuery, answer: '', sources: [] };
       setMessages((current) => [...current, userMessage, assistantMessage].slice(-20));
       setQuery('');
-      await streamAnswer(cleanQuery, (state) => {
+      await streamAnswer(cleanQuery, selectedAgentId || null, (state) => {
         updateMessage(assistantId, {
           answer: state.answer,
           error: state.error ?? '',
           traceId: state.traceId,
           sources: state.sources,
           mode: state.mode ?? null,
+          activeAgentId: state.activeAgentId ?? null,
+          activeAgentName: state.activeAgentName ?? null,
+          activeAgentReason: state.activeAgentReason ?? null,
+          activeAgentSkills: state.activeAgentSkills ?? [],
           canExpand: Boolean(state.canExpand),
           expansionQuestion: state.expansionQuestion ?? null,
         });
@@ -453,6 +502,9 @@ export function FloatingAssistant() {
                           <div className="space-y-2 rounded-xl bg-slate-50 p-2 text-xs text-slate-600">
                             <div>Trace ID：{message.traceId || '-'}</div>
                             <div>回答模式：{modeLabel(message.mode)}</div>
+                            <div>使用专家：{message.activeAgentName || (selectedAgentId ? '指定专家匹配失败' : '自动路由')}</div>
+                            {message.activeAgentReason ? <div>选择原因：{message.activeAgentReason}</div> : null}
+                            {message.activeAgentSkills?.length ? <div>启用能力：{message.activeAgentSkills.join('、')}</div> : null}
                             <div className="flex flex-wrap gap-2">
                               {message.sources?.length ? message.sources.map((source) => (
                                 <a
@@ -508,6 +560,22 @@ export function FloatingAssistant() {
                 )}
               </div>
 
+              <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                <select
+                  value={selectedAgentId}
+                  onChange={(event) => setSelectedAgentId(event.target.value)}
+                  className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-blue-300"
+                >
+                  <option value="">自动选择专家</option>
+                  {agents.map((agent) => (
+                    <option key={agent.agent_id} value={agent.agent_id}>{agent.name}（{agent.knowledge_domain}）</option>
+                  ))}
+                </select>
+                <Button type="button" variant="outline" onClick={() => void fetchExpertAgents().then((items) => setAgents(items.filter((item) => item.status === 'active')))}>
+                  刷新专家
+                </Button>
+              </div>
+
               <Textarea
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -516,33 +584,7 @@ export function FloatingAssistant() {
               />
               <div className="flex gap-2">
                 <Button
-                  onClick={async () => {
-                    try {
-                      setLoading(true);
-                      const cleanQuery = query.trim();
-                      const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', query: cleanQuery };
-                      const assistantId = crypto.randomUUID();
-                      const assistantMessage: ChatMessage = { id: assistantId, role: 'assistant', query: cleanQuery, answer: '', sources: [] };
-                      setMessages((current) => [...current, userMessage, assistantMessage].slice(-20));
-                      setQuery('');
-                      await streamAnswer(cleanQuery, (state) => {
-                        updateMessage(assistantId, {
-                          answer: state.answer,
-                          error: state.error ?? '',
-                          traceId: state.traceId,
-                          sources: state.sources,
-                          mode: state.mode ?? null,
-                          canExpand: Boolean(state.canExpand),
-                          expansionQuestion: state.expansionQuestion ?? null,
-                        });
-                      });
-                      notifyDone();
-                    } catch (error) {
-                      alert(error instanceof Error ? error.message : '问答失败');
-                    } finally {
-                      setLoading(false);
-                    }
-                  }}
+                  onClick={handleSend}
                   disabled={!query || loading}
                   className="flex-1"
                 >

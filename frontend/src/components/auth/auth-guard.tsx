@@ -5,9 +5,11 @@ import { usePathname, useRouter } from 'next/navigation';
 
 const PUBLIC_PATHS = ['/login'];
 const CHANGE_PASSWORD_PATH = '/change-password';
+const ADMIN_PATHS = ['/admin', '/tasks'];
 
 type StoredUser = {
   is_first_login?: boolean;
+  roles?: string[];
 };
 
 function readStoredToken() {
@@ -54,6 +56,8 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     }
     const isPublic = PUBLIC_PATHS.includes(pathname);
     const isChangePassword = pathname === CHANGE_PASSWORD_PATH;
+    const isAdminPath = ADMIN_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+    const isAdminUser = Boolean(user?.roles?.includes('admin') || user?.roles?.includes('reviewer'));
 
     if (!token && !isPublic) {
       setReady(true);
@@ -62,8 +66,14 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     }
 
     if (token && user?.is_first_login && !isChangePassword) {
-      setReady(true);
+      setReady(false);
       router.replace(CHANGE_PASSWORD_PATH);
+      return;
+    }
+
+    if (token && isAdminPath && !isAdminUser) {
+      setReady(false);
+      router.replace('/');
       return;
     }
 

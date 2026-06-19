@@ -18,7 +18,7 @@ const primaryNavItems = [
 
 const supportNavItems = [
   { href: '/admin', label: '内容管理', icon: ShieldCheck, adminOnly: true },
-  { href: '/tasks', label: '自动学习', icon: FileUp },
+  { href: '/tasks', label: '自动学习', icon: FileUp, adminOnly: true },
   { href: '/conversations', label: '问答记录', icon: History },
 ];
 
@@ -125,7 +125,9 @@ export function SidebarShell({ children }: { children: ReactNode }) {
               })}
             </div>
 
-            <div className="mt-4 px-3 text-[12px] font-medium text-slate-500">管理入口</div>
+            {isAdminUser ? (
+              <div className="mt-4 px-3 text-[12px] font-medium text-slate-500">管理入口</div>
+            ) : null}
             <div className="mt-2 space-y-1">
               {supportNavItems.filter((item) => !item.adminOnly || isAdminUser).map((item) => {
                 const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);

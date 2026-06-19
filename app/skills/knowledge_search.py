@@ -28,12 +28,14 @@ class KnowledgeSearchSkill:
         self.db = db
         self.retriever = HybridRetriever(db)
 
-    def execute(self, query: str, top_k: int = 5, user_id: str | None = None) -> SkillResult:
+    def execute(self, query: str, top_k: int = 5, user_id: str | None = None, scope: dict[str, Any] | None = None) -> SkillResult:
         hits = self.retriever.search(query=query, top_k=max(top_k * 3, top_k))
         user = AuthService(self.db).get_user_by_id(user_id) if user_id else None
         access = DocumentAccessService(self.db)
         results = []
         for hit in hits:
+            if not self._matches_scope(hit.chunk.document, hit.chunk.content, scope):
+                continue
             decision = access.can_access_document(hit.chunk.document, user) if user else None
             can_access = decision.can_access if decision else True
             if not can_access:
@@ -61,3 +63,19 @@ class KnowledgeSearchSkill:
             "results": results,
         }
         return SkillResult(skill_id=self.skill_id, name=self.name, version=self.version, output=output)
+
+    def _matches_scope(self, document: Any, content: str, scope: dict[str, Any] | None) -> bool:
+        if not scope:
+            return True
+        document_ids = {str(item) for item in scope.get("document_ids", []) if str(item).strip()}
+        if document_ids and getattr(document, "document_id", None) not in document_ids:
+            return False
+        categories = {str(item) for item in scope.get("knowledge_categories", []) if str(item).strip()}
+        if categories and getattr(document, "knowledge_category", None) not in categories:
+            return False
+        keywords = [str(item).lower() for item in scope.get("keywords", []) if str(item).strip()]
+        if keywords:
+            haystack = " ".join(filter(None, [getattr(document, "file_name", ""), content])).lower()
+            if not any(keyword in haystack for keyword in keywords):
+                return False
+        return True

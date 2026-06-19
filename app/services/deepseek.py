@@ -19,8 +19,18 @@ class DeepSeekClient:
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
-    def build_messages(self, question: str, context_chunks: list[str], casual: bool = False) -> list[dict[str, str]]:
+    def build_messages(self, question: str, context_chunks: list[str], casual: bool = False, expert_context: dict[str, str] | None = None) -> list[dict[str, str]]:
         context_text = "\n\n".join(f"[{idx + 1}] {chunk}" for idx, chunk in enumerate(context_chunks))
+        expert_prompt = ""
+        if expert_context:
+            expert_prompt = (
+                f"你当前扮演专家 Agent：{expert_context.get('agent_name', '')}。"
+                f"知识领域：{expert_context.get('domain_name', '')}。"
+                f"职责说明：{expert_context.get('description', '')}。"
+                f"知识范围：{expert_context.get('knowledge_scope', '')}。"
+                f"可用能力：{expert_context.get('skills', '')}。"
+                "回答时要体现该专家身份，并优先使用其知识范围内的内容。"
+            )
         if casual:
             system_prompt = (
                 "你是一个通用 AI 助手，回答方式接近正常聊天版 DeepSeek。"
@@ -33,7 +43,7 @@ class DeepSeekClient:
             user_prompt = f"问题：{question}\n\n可选参考资料（不要求完全依据）：\n{context_text or '无'}"
         else:
             system_prompt = (
-                "你是企业知识库专家助手。必须优先基于给定的知识库上下文回答，"
+                f"你是企业知识库专家助手。{expert_prompt}必须优先基于给定的知识库上下文回答，"
                 "不要把通用常识放在知识库证据之前。"
                 "如果上下文足以回答，请直接给出步骤或结论；如果上下文不足，请明确说明不足并建议补充知识。"
                 "回答末尾用一句话说明依据来自哪些知识片段编号。"
@@ -45,14 +55,14 @@ class DeepSeekClient:
             {"role": "user", "content": user_prompt},
         ]
 
-    def stream_chat(self, question: str, context_chunks: list[str], casual: bool = False) -> Iterable[str]:
+    def stream_chat(self, question: str, context_chunks: list[str], casual: bool = False, expert_context: dict[str, str] | None = None) -> Iterable[str]:
         if not self.is_configured():
             yield self._build_fallback_answer(question, context_chunks, casual=casual)
             return
 
         payload = {
             "model": self.model,
-            "messages": self.build_messages(question, context_chunks, casual=casual),
+            "messages": self.build_messages(question, context_chunks, casual=casual, expert_context=expert_context),
             "stream": True,
             "thinking": {"type": "enabled"} if settings.deepseek_thinking_enabled else {"type": "disabled"},
             "reasoning_effort": "high",

@@ -6,6 +6,7 @@ from typing import Any, Iterable
 from sqlalchemy.orm import Session
 
 from app.core.skills import SkillRegistry
+from app.services.expert_agent_runtime import ExpertAgentContext
 from app.services.deepseek import DeepSeekClient
 
 
@@ -22,21 +23,21 @@ class ExpertAgent:
         self.skills = SkillRegistry(db)
         self.llm = DeepSeekClient()
 
-    def answer(self, question: str, top_k: int = 5, user_id: str | None = None, casual: bool = False) -> tuple[str, list[str], list[AgentTrace]]:
-        search_result = self.skills.knowledge_search().execute(query=question, top_k=top_k, user_id=user_id)
+    def answer(self, question: str, top_k: int = 5, user_id: str | None = None, casual: bool = False, agent_context: ExpertAgentContext | None = None) -> tuple[str, list[str], list[AgentTrace]]:
+        search_result = self.skills.knowledge_search().execute(query=question, top_k=top_k, user_id=user_id, scope=agent_context.search_scope() if agent_context else None)
         chunks = search_result.output.get("results", [])
         context_chunks = [item.get("content", "") for item in chunks]
         refs = [f"{item.get('source_file_name', 'unknown')}#chunk-{item.get('chunk_index', 0)}" for item in chunks]
         traces = self._search_traces(question, top_k, len(chunks))
 
         if self.llm.is_configured():
-            answer_parts = list(self.llm.stream_chat(question, context_chunks, casual=casual))
+            answer_parts = list(self.llm.stream_chat(question, context_chunks, casual=casual, expert_context=agent_context.prompt_context() if agent_context else None))
             answer_text = "".join(answer_parts).strip()
             traces.append(
                 AgentTrace(
                     agent_name="ExpertAgent",
                     action="deepseek_chat",
-                    payload={"model": self.llm.model, "stream": True, "context_count": len(context_chunks)},
+                    payload={"model": self.llm.model, "stream": True, "context_count": len(context_chunks), "agent_id": agent_context.agent_id if agent_context else None},
                 )
             )
             if answer_text:
@@ -51,20 +52,20 @@ class ExpertAgent:
         )
         return self._fallback_answer(question, chunks), refs, traces
 
-    def stream_answer(self, question: str, top_k: int = 5, user_id: str | None = None, casual: bool = False) -> tuple[Iterable[str], list[str], list[AgentTrace]]:
-        search_result = self.skills.knowledge_search().execute(query=question, top_k=top_k, user_id=user_id)
+    def stream_answer(self, question: str, top_k: int = 5, user_id: str | None = None, casual: bool = False, agent_context: ExpertAgentContext | None = None) -> tuple[Iterable[str], list[str], list[AgentTrace]]:
+        search_result = self.skills.knowledge_search().execute(query=question, top_k=top_k, user_id=user_id, scope=agent_context.search_scope() if agent_context else None)
         chunks = search_result.output.get("results", [])
         context_chunks = [item.get("content", "") for item in chunks]
         refs = [f"{item.get('source_file_name', 'unknown')}#chunk-{item.get('chunk_index', 0)}" for item in chunks]
         traces = self._search_traces(question, top_k, len(chunks))
 
         if self.llm.is_configured():
-            streamed = self.llm.stream_chat(question, context_chunks, casual=casual)
+            streamed = self.llm.stream_chat(question, context_chunks, casual=casual, expert_context=agent_context.prompt_context() if agent_context else None)
             traces.append(
                 AgentTrace(
                     agent_name="ExpertAgent",
                     action="deepseek_chat",
-                    payload={"model": self.llm.model, "stream": True, "context_count": len(context_chunks)},
+                    payload={"model": self.llm.model, "stream": True, "context_count": len(context_chunks), "agent_id": agent_context.agent_id if agent_context else None},
                 )
             )
             return streamed, refs, traces

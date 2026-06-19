@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.agents.expert_agent import ExpertAgent
 from app.agents.review_agent import ReviewAgent
 from app.core.config import get_settings
-from app.core.exceptions import ValidationAppError
+from app.core.exceptions import PermissionAppError, ValidationAppError
 from app.core.skills import SkillRegistry
 from app.models.conversation import ConversationTurn
 from app.models.core import KnowledgeMetadata, TaskRecord
@@ -21,6 +21,7 @@ from app.schemas.flywheel import KnowledgeGapCreate
 from app.schemas.review import ReviewRequest
 from app.services.conversation import ConversationService
 from app.services.embedding import fake_embedding
+from app.services.expert_agent_runtime import ExpertAgentContext, ExpertAgentRuntime
 from app.services.flywheel import KnowledgeFlywheelService
 from app.services.parsers import chunk_text, extract_text_from_bytes
 from app.services.search import HybridRetriever
@@ -52,6 +53,7 @@ class KnowledgeService:
         self.expert_agent = ExpertAgent(db)
         self.tasks = TaskService(db)
         self.agent_recommender = AgentRecommender(db)
+        self.agent_runtime = ExpertAgentRuntime(db)
 
     def list_documents(self, limit: int = 100, offset: int = 0) -> list[Document]:
         stmt = select(Document).order_by(Document.created_at.desc()).offset(offset).limit(limit)
@@ -69,10 +71,10 @@ class KnowledgeService:
         self.db.commit()
         return document
 
-    def search(self, query: str, top_k: int = 5, user_id: str | None = None) -> list[SearchHit]:
+    def search(self, query: str, top_k: int = 5, user_id: str | None = None, scope: dict[str, Any] | None = None) -> list[SearchHit]:
         if not query.strip():
             raise ValidationAppError("query 不能为空")
-        skill_result = self.skills.knowledge_search().execute(query=query, top_k=top_k, user_id=user_id)
+        skill_result = self.skills.knowledge_search().execute(query=query, top_k=top_k, user_id=user_id, scope=scope)
         results = skill_result.output.get("results", [])
         hits: list[SearchHit] = []
         for item in results:
@@ -230,20 +232,20 @@ class KnowledgeService:
         trace_id: str | None = None,
         agent_id: str | None = None,
     ) -> tuple[str, list[SearchHit], float, list[str], str | None, str | None, str | None]:
-        hits = self.search(query=query, top_k=top_k, user_id=user_id)
-        recommendation = self.agent_recommender.recommend(query, agent_id=agent_id)
+        agent_context = self.resolve_agent_context(query=query, agent_id=agent_id)
+        hits = self.search(query=query, top_k=top_k, user_id=user_id, scope=agent_context.search_scope() if agent_context else None)
         if not hits:
             answer = "未找到相关知识，请尝试补充或重新表述问题。"
-            if recommendation:
-                answer += f"\n\n建议你试试：{recommendation.agent_name}。{recommendation.reason}"
+            if agent_context:
+                answer += f"\n\n已使用专家：{agent_context.agent_name}。{agent_context.selection_reason}"
             if session_id:
                 self.conversation.create_turn(
                     payload=self._make_turn_payload(session_id, user_id, query, answer, 0.0, [], trace_id)
                 )
-            return answer, [], 0.0, [], recommendation.agent_id if recommendation else None, recommendation.agent_name if recommendation else None, recommendation.reason if recommendation else None
+            return answer, [], 0.0, [], agent_context.agent_id if agent_context else None, agent_context.agent_name if agent_context else None, agent_context.selection_reason if agent_context else None
 
         refs = [f"{h.chunk.document.file_name}#chunk-{h.chunk.chunk_index}" for h in hits]
-        answer, refs_from_agent, _traces = self.expert_agent.answer(question=query, top_k=top_k, user_id=user_id)
+        answer, refs_from_agent, _traces = self.expert_agent.answer(question=query, top_k=top_k, user_id=user_id, agent_context=agent_context)
         if refs_from_agent:
             refs = refs_from_agent
 
@@ -263,17 +265,20 @@ class KnowledgeService:
                 )
             except Exception:
                 self.db.rollback()
-        if recommendation:
-            answer = f"{answer}\n\n建议你试试：{recommendation.agent_name}。{recommendation.reason}"
+        if agent_context:
+            answer = f"{answer}\n\n已使用专家：{agent_context.agent_name}。{agent_context.selection_reason}"
         if session_id:
             self.conversation.create_turn(
                 payload=self._make_turn_payload(session_id, user_id, query, answer, confidence, refs, trace_id)
             )
-        return answer, hits, confidence, refs, recommendation.agent_id if recommendation else None, recommendation.agent_name if recommendation else None, recommendation.reason if recommendation else None
+        return answer, hits, confidence, refs, agent_context.agent_id if agent_context else None, agent_context.agent_name if agent_context else None, agent_context.selection_reason if agent_context else None
 
-    def stream_answer(self, query: str, top_k: int = 5, user_id: str | None = None, casual: bool = False):
+    def resolve_agent_context(self, query: str, agent_id: str | None = None) -> ExpertAgentContext | None:
+        return self.agent_runtime.resolve(question=query, agent_id=agent_id)
+
+    def stream_answer(self, query: str, top_k: int = 5, user_id: str | None = None, casual: bool = False, agent_context: ExpertAgentContext | None = None):
         """Return a stream iterator together with references and traces."""
-        return self.expert_agent.stream_answer(question=query, top_k=top_k, user_id=user_id, casual=casual)
+        return self.expert_agent.stream_answer(question=query, top_k=top_k, user_id=user_id, casual=casual, agent_context=agent_context)
 
     def expand_knowledge_from_answer(self, query: str, answer: str, user_id: str | None = None, target_document_id: str | None = None, threshold: float = 0.25) -> dict[str, str | None]:
         content = self._build_expansion_content(query, answer)
@@ -443,6 +448,12 @@ class KnowledgeService:
         issue_type: str | None = None,
         user_id: str | None = None,
     ) -> Feedback:
+        turn = self.db.get(ConversationTurn, answer_id)
+        if turn is None or turn.session_id != session_id:
+            raise ValidationAppError("问答记录不存在或会话信息不匹配")
+        if not user_id or turn.user_id != user_id:
+            raise PermissionAppError("只能评价自己的问答记录")
+
         feedback = Feedback(
             feedback_id=str(uuid.uuid4()),
             session_id=session_id,
@@ -456,46 +467,38 @@ class KnowledgeService:
         self.db.commit()
         self.db.refresh(feedback)
         if (not is_helpful) or rating <= 2:
-            turn = self.db.get(ConversationTurn, answer_id)
-            if turn is None:
-                turn = self.db.execute(
-                    select(ConversationTurn)
-                    .where(ConversationTurn.session_id == session_id)
-                    .order_by(ConversationTurn.created_at.desc())
-                ).scalars().first()
-            if turn is not None:
-                try:
-                    review = ReviewAgent(self.db).review(
-                        ReviewRequest(
-                            review_type="answer_quality",
-                            subject={
-                                "query": turn.query_text,
-                                "answer": turn.answer_text,
-                                "confidence": turn.confidence,
-                                "mode": "feedback",
-                                "has_sources": (turn.source_refs_json or "[]").strip() not in {"", "[]", "null"},
-                                "user_feedback": {
-                                    "rating": rating,
-                                    "is_helpful": is_helpful,
-                                    "comment": comment,
-                                    "issue_type": issue_type,
-                                },
+            try:
+                review = ReviewAgent(self.db).review(
+                    ReviewRequest(
+                        review_type="answer_quality",
+                        subject={
+                            "query": turn.query_text,
+                            "answer": turn.answer_text,
+                            "confidence": turn.confidence,
+                            "mode": "feedback",
+                            "has_sources": (turn.source_refs_json or "[]").strip() not in {"", "[]", "null"},
+                            "user_feedback": {
+                                "rating": rating,
+                                "is_helpful": is_helpful,
+                                "comment": comment,
+                                "issue_type": issue_type,
                             },
-                            context={"session_id": session_id, "answer_id": answer_id},
+                        },
+                        context={"session_id": session_id, "answer_id": answer_id},
+                    )
+                )
+                if review.suggestion in {"review", "reject"}:
+                    self.flywheel.create_gap(
+                        KnowledgeGapCreate(
+                            query_text=turn.query_text,
+                            session_id=turn.session_id,
+                            user_id=user_id,
+                            answer_id=turn.turn_id,
+                            issue_type=issue_type or "negative_user_feedback",
+                            confidence=min(float(turn.confidence or 0.0), 0.3),
+                            evidence=json.dumps(review.model_dump(), ensure_ascii=False),
                         )
                     )
-                    if review.suggestion in {"review", "reject"}:
-                        self.flywheel.create_gap(
-                            KnowledgeGapCreate(
-                                query_text=turn.query_text,
-                                session_id=turn.session_id,
-                                user_id=user_id or turn.user_id,
-                                answer_id=turn.turn_id,
-                                issue_type=issue_type or "negative_user_feedback",
-                                confidence=min(float(turn.confidence or 0.0), 0.3),
-                                evidence=json.dumps(review.model_dump(), ensure_ascii=False),
-                            )
-                        )
-                except Exception:
-                    self.db.rollback()
+            except Exception:
+                self.db.rollback()
         return feedback

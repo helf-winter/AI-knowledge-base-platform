@@ -118,7 +118,7 @@ export default function DashboardPage() {
         fetchJson<TaskItem[]>('/api/v1/tasks', []),
         isAdminUser ? fetchJson<KnowledgeMetadata[]>('/api/v1/admin/knowledge-metadata', []) : Promise.resolve([]),
         fetchJson<ConversationTurn[]>('/api/v1/conversation/turns', []),
-        fetchJson<LearningAnalysis>('/api/v1/flywheel/learning?status=pending', {}),
+        isAdminUser ? fetchJson<LearningAnalysis>('/api/v1/flywheel/learning?status=pending', {}) : Promise.resolve({}),
       ]);
       setDocuments(docItems);
       setTasks(taskItems);
@@ -138,17 +138,28 @@ export default function DashboardPage() {
     const failedTasks = tasks.filter((task) => task.status === 'failed').length;
     const runningTasks = tasks.filter((task) => task.status === 'running' || task.status === 'pending').length;
     const availableKnowledge = knowledge.filter((item) => item.status === 'available').length;
-    return [
+    const items = [
       { label: '知识文档', value: documents.length, hint: '可检索文档', icon: FileText },
-      { label: '知识条目', value: knowledge.length, hint: `${availableKnowledge} 条可用`, icon: BookOpenCheck },
-      { label: '自动学习', value: learning.total_gaps ?? 0, hint: '待处理缺口', icon: Sparkles },
       { label: '任务状态', value: tasks.length, hint: `${runningTasks} 执行中 / ${failedTasks} 失败`, icon: ListChecks },
     ];
-  }, [documents.length, knowledge, learning.total_gaps, tasks]);
+    if (isAdminUser) {
+      items.splice(1, 0,
+        { label: '知识条目', value: knowledge.length, hint: `${availableKnowledge} 条可用`, icon: BookOpenCheck },
+        { label: '自动学习', value: learning.total_gaps ?? 0, hint: '待处理缺口', icon: Sparkles },
+      );
+    }
+    return items;
+  }, [documents.length, isAdminUser, knowledge, learning.total_gaps, tasks]);
 
   const latestTasks = tasks.slice(0, 5);
   const latestTurns = turns.slice(0, 4);
   const topInsights = learning.insights?.slice(0, 3) ?? [];
+  const summaryGridClass = isAdminUser
+    ? 'grid gap-4 md:grid-cols-2 xl:grid-cols-4'
+    : 'grid gap-4 md:grid-cols-2 xl:grid-cols-2';
+  const activityGridClass = isAdminUser
+    ? 'grid gap-6 xl:grid-cols-[1.05fr_0.95fr]'
+    : 'grid gap-6';
 
   return (
     <div className="space-y-6">
@@ -169,11 +180,13 @@ export default function DashboardPage() {
                 <Search size={16} /> 检索知识
               </Link>
             </Button>
-            <Button asChild variant="outline">
-              <Link href="/tasks">
-                <Sparkles size={16} /> 自动学习
-              </Link>
-            </Button>
+            {isAdminUser ? (
+              <Button asChild variant="outline">
+                <Link href="/tasks">
+                  <Sparkles size={16} /> 自动学习
+                </Link>
+              </Button>
+            ) : null}
             <Button onClick={() => void load()} disabled={loading} variant="outline">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> 刷新
             </Button>
@@ -181,7 +194,7 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <section className={summaryGridClass}>
         {summary.map((item) => {
           const Icon = item.icon;
           return (
@@ -203,8 +216,8 @@ export default function DashboardPage() {
         })}
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-        <Card className="rounded-2xl border-slate-200 bg-white shadow-sm">
+      <section className={activityGridClass}>
+        {isAdminUser ? <Card className="rounded-2xl border-slate-200 bg-white shadow-sm">
           <CardHeader className="border-b border-slate-100 pb-4">
             <CardTitle className="flex items-center gap-2 text-base text-slate-950">
               <Sparkles size={16} /> 自动学习入口
@@ -240,7 +253,7 @@ export default function DashboardPage() {
               ) : null}
             </div>
           </CardContent>
-        </Card>
+        </Card> : null}
 
         <Card className="rounded-2xl border-slate-200 bg-white shadow-sm">
           <CardHeader className="border-b border-slate-100 pb-4">
@@ -308,9 +321,11 @@ export default function DashboardPage() {
               </div>
             ))}
             {latestTasks.length === 0 ? <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-500">暂无任务。</div> : null}
-            <Button asChild variant="outline" className="w-full">
-              <Link href="/tasks">进入任务监控</Link>
-            </Button>
+            {isAdminUser ? (
+              <Button asChild variant="outline" className="w-full">
+                <Link href="/tasks">进入任务监控</Link>
+              </Button>
+            ) : null}
           </CardContent>
         </Card>
       </section>

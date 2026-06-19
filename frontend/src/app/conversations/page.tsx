@@ -40,24 +40,29 @@ async function fetchConversations(sessionId?: string) {
 }
 
 async function submitFeedback(item: ConversationItem, isHelpful: boolean, rating: number, issueType?: string) {
-  const res = await fetch(`${API_BASE}/api/v1/feedback`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    },
-    body: JSON.stringify({
-      session_id: item.session_id,
-      answer_id: item.turn_id,
-      rating,
-      is_helpful: isHelpful,
-      issue_type: issueType,
-      comment: isHelpful ? '用户认为回答有帮助' : '用户认为回答不完整或未解决问题',
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/v1/feedback`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      body: JSON.stringify({
+        session_id: item.session_id,
+        answer_id: item.turn_id,
+        rating,
+        is_helpful: isHelpful,
+        issue_type: issueType,
+        comment: isHelpful ? '用户认为回答有帮助' : '用户认为回答不完整或未解决问题',
+      }),
+    });
+  } catch {
+    throw new Error('无法连接后端服务，请确认后端已启动');
+  }
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(text || '提交反馈失败');
+    const body = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(body?.detail || '提交反馈失败');
   }
 }
 
