@@ -1,7 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -96,7 +95,7 @@ async function fetchMetadata() {
 }
 
 async function createAgent(payload: { name: string; description?: string; knowledge_domain: string; knowledge_scope_json?: string; skills_json?: string; model_name: string; prompt_version: string; status: string }) {
-  const res = await fetch(`${API_BASE}/api/v1/admin/expert-agents`, {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/expert-agents`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -109,10 +108,10 @@ async function createAgent(payload: { name: string; description?: string; knowle
 }
 
 export default function SkillsPage() {
-  const router = useRouter();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [agents, setAgents] = useState<ExpertAgent[]>([]);
   const [metadata, setMetadata] = useState<KnowledgeMetadata[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState('');
   const [domain, setDomain] = useState('');
@@ -246,7 +245,8 @@ export default function SkillsPage() {
                     await load();
                     const agentId = created?.data?.agent_id;
                     if (agentId) {
-                      router.push(`/chat?agent_id=${encodeURIComponent(agentId)}&query=${encodeURIComponent(domain || name)}`);
+                      setSelectedAgentId(agentId);
+                      setQuery(name || domain);
                     }
                     alert('创建成功');
                   } catch (error) {
@@ -278,7 +278,7 @@ export default function SkillsPage() {
               </div>
             ) : (
               filteredAgents.map((agent) => (
-                <div key={agent.agent_id} className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4">
+                <div key={agent.agent_id} className={`rounded-2xl border p-4 ${selectedAgentId === agent.agent_id ? 'border-blue-300 bg-blue-50/70' : 'border-[color:var(--border)] bg-white/70'}`}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <div className="text-sm font-medium text-[color:var(--text)]">{agent.name}</div>

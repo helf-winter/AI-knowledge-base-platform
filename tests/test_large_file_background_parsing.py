@@ -37,6 +37,17 @@ class LargeFileBackgroundParsingTest(unittest.TestCase):
         self.assertIn("解析进度", page)
         self.assertIn("继续解析", page)
 
+    def test_document_detail_loads_primary_document_before_optional_panels(self) -> None:
+        page = (ROOT / "frontend" / "src" / "app" / "documents" / "[document_id]" / "page.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("const item = await fetchDocument", page)
+        self.assertIn("Promise.allSettled", page)
+
+    def test_duplicate_upload_is_scoped_to_owner(self) -> None:
+        service = (ROOT / "app" / "services" / "knowledge_service.py").read_text(encoding="utf-8")
+
+        self.assertIn("Document.owner_user_id == owner_user_id", service)
+
 
 if __name__ == "__main__":
     unittest.main()

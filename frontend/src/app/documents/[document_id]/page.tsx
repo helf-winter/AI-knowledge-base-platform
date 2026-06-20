@@ -162,11 +162,13 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ docum
       const resolved = await params;
       setLoading(true);
       try {
-        const [item, taskItems, metadataItems] = await Promise.all([
-          fetchDocument(resolved.document_id),
+        const item = await fetchDocument(resolved.document_id);
+        const [taskItemsResult, metadataItemsResult] = await Promise.allSettled([
           fetchTasks(resolved.document_id),
           fetchMetadata(resolved.document_id),
         ]);
+        const taskItems = taskItemsResult.status === 'fulfilled' ? taskItemsResult.value : [];
+        const metadataItems = metadataItemsResult.status === 'fulfilled' ? metadataItemsResult.value : [];
         if (mounted) {
           setDetail(item);
           setTasks(taskItems);

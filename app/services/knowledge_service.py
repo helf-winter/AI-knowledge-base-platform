@@ -119,7 +119,13 @@ class KnowledgeService:
             raise ValidationAppError("file content cannot be empty")
 
         checksum = calculate_sha256(content)
-        exists = self.db.execute(select(Document).where(Document.checksum == checksum, Document.file_name == file_name)).scalar_one_or_none()
+        exists = self.db.execute(
+            select(Document).where(
+                Document.checksum == checksum,
+                Document.file_name == file_name,
+                Document.owner_user_id == owner_user_id,
+            )
+        ).scalar_one_or_none()
         if exists:
             return exists
 

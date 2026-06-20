@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.learning_agent import LearningAgent
 from app.agents.review_agent import ReviewAgent
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_roles
 from app.models.core import AuditLog
