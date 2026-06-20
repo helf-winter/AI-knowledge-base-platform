@@ -10,6 +10,9 @@ venv/
 data/
 dist/
 docs/
+ppt/
+tests/
+.agents/
 taste-skill-main/
 视频课程/
 knowledge.db

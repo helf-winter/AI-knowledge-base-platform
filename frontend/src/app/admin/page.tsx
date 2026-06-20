@@ -89,6 +89,28 @@ type KnowledgeSuggestion = {
   updated_at?: string | null;
 };
 
+type KnowledgeMergeSuggestion = {
+  suggestion_id: string;
+  source_document_ids: string[];
+  source_document_names: string[];
+  suggested_title: string;
+  suggested_category?: string | null;
+  suggested_outline?: string | null;
+  suggested_content: string;
+  similarity_reason: string;
+  generation_method?: 'deepseek' | 'rule_fallback' | string;
+  conflict_notes?: string | null;
+  source_attributions?: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  requester_id?: string | null;
+  reviewed_by?: string | null;
+  review_comment?: string | null;
+  merged_document_id?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 function getToken() {
   return typeof window !== 'undefined' ? localStorage.getItem('kb_token') : null;
 }
@@ -171,6 +193,41 @@ async function reviewKnowledgeSuggestion(suggestionId: string, status: 'accepted
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(text || '处理公有知识建议失败');
+  }
+  return res.json();
+}
+
+async function scanKnowledgeMergeSuggestions() {
+  const res = await authedFetch(`${API_BASE}/api/v1/knowledge/merge-suggestions/scan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ min_score: 0.3 }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '扫描相似知识失败');
+  }
+  return res.json();
+}
+
+async function fetchKnowledgeMergeSuggestions(status: string) {
+  const url = new URL(`${API_BASE}/api/v1/admin/knowledge-merge-suggestions`);
+  if (status) url.searchParams.set('status', status);
+  const res = await authedFetch(url.toString());
+  if (!res.ok) throw new Error(res.status === 403 ? '当前账号无权访问知识整合建议' : '加载知识整合建议失败');
+  const json = await res.json();
+  return (json.data ?? []) as KnowledgeMergeSuggestion[];
+}
+
+async function reviewKnowledgeMergeSuggestion(suggestionId: string, approve: boolean, reviewComment: string, archiveSources = false) {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/knowledge-merge-suggestions/${suggestionId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approve, review_comment: reviewComment || null, archive_sources: archiveSources }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '处理知识整合建议失败');
   }
   return res.json();
 }
@@ -291,6 +348,11 @@ export default function AdminPage() {
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [suggestionReviewingId, setSuggestionReviewingId] = useState<string | null>(null);
   const [suggestionReviewComment, setSuggestionReviewComment] = useState('');
+  const [mergeSuggestions, setMergeSuggestions] = useState<KnowledgeMergeSuggestion[]>([]);
+  const [mergeStatus, setMergeStatus] = useState('pending');
+  const [mergeLoading, setMergeLoading] = useState(false);
+  const [mergeReviewingId, setMergeReviewingId] = useState<string | null>(null);
+  const [mergeArchiveSources, setMergeArchiveSources] = useState<Record<string, boolean>>({});
 
   const [items, setItems] = useState<KnowledgeMetadata[]>([]);
   const [loading, setLoading] = useState(false);
@@ -354,13 +416,156 @@ export default function AdminPage() {
     }
   };
 
+  const loadMergeSuggestions = async () => {
+    setMergeLoading(true);
+    try {
+      setMergeSuggestions(await fetchKnowledgeMergeSuggestions(mergeStatus));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '加载知识整合建议失败');
+    } finally {
+      setMergeLoading(false);
+    }
+  };
+
   useEffect(() => { void loadRequests(); }, [requestStatus]);
   useEffect(() => { void loadPublishRequests(); }, [publishStatus]);
   useEffect(() => { void loadKnowledgeSuggestions(); }, [suggestionStatus]);
+  useEffect(() => { void loadMergeSuggestions(); }, [mergeStatus]);
   useEffect(() => { void loadMetadata(); }, [filter, documentFilter]);
 
   return (
     <div className="space-y-6">
+      <section>
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100 pb-4">
+            <CardTitle className="flex items-center gap-2 text-base text-slate-900"><Bot size={16} /> 知识整合 Agent</CardTitle>
+            <CardDescription className="text-slate-700">扫描相似知识文档，生成可审核的整合建议；通过后会创建新的整合知识文档，原始文档不会被删除。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            <div className="flex flex-wrap gap-2">
+              {['pending', 'approved', 'rejected'].map((item) => (
+                <Button key={item} size="sm" variant={mergeStatus === item ? 'default' : 'outline'} onClick={() => setMergeStatus(item)}>
+                  {statusLabel(item)}
+                </Button>
+              ))}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    setMergeLoading(true);
+                    await scanKnowledgeMergeSuggestions();
+                    await loadMergeSuggestions();
+                  } catch (error) {
+                    alert(error instanceof Error ? error.message : '扫描相似知识失败');
+                  } finally {
+                    setMergeLoading(false);
+                  }
+                }}
+                disabled={mergeLoading}
+              >
+                <RefreshCw size={14} className={mergeLoading ? 'animate-spin' : ''} /> 扫描相似知识
+              </Button>
+            </div>
+
+            {mergeSuggestions.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">当前状态下暂无知识整合建议。</div>
+            ) : (
+              <div className="grid gap-3 xl:grid-cols-2">
+                {mergeSuggestions.map((item) => (
+                  <div key={item.suggestion_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-medium text-slate-950">{item.suggested_title}</div>
+                        <div className="mt-1 text-xs text-slate-600">{item.suggested_category || '整合知识'}</div>
+                      </div>
+                      <Badge className="bg-white text-slate-700 hover:bg-white">{statusLabel(item.status)}</Badge>
+                    </div>
+                    <div className="mt-3 rounded-lg bg-white p-3 text-xs leading-5 text-slate-700">
+                      <div className="font-medium text-slate-900">相似原因</div>
+                      <div className="mt-1">{item.similarity_reason}</div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                      <Badge className={item.generation_method === 'deepseek' ? 'bg-blue-50 text-blue-700 hover:bg-blue-50' : 'bg-amber-50 text-amber-700 hover:bg-amber-50'}>
+                        {item.generation_method === 'deepseek' ? 'DeepSeek 智能整合' : '规则降级草稿'}
+                      </Badge>
+                    </div>
+                    <details className="mt-3 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                      <summary className="cursor-pointer font-medium text-slate-900">查看整合草稿与来源标注</summary>
+                      {item.suggested_outline ? <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-slate-50 p-3">{item.suggested_outline}</pre> : null}
+                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-3 leading-5">{item.suggested_content}</pre>
+                      {item.source_attributions ? <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-blue-50 p-3 text-blue-900">来源标注：{item.source_attributions}</pre> : null}
+                    </details>
+                    {item.conflict_notes ? (
+                      <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                        <div className="font-medium">冲突与待确认事项</div>
+                        <div className="mt-1 whitespace-pre-wrap">{item.conflict_notes}</div>
+                      </div>
+                    ) : null}
+                    <div className="mt-3 text-xs text-slate-600">
+                      <span className="font-medium text-slate-900">来源文档：</span>
+                      {(item.source_document_names?.length ? item.source_document_names : item.source_document_ids).join('、')}
+                    </div>
+                    {item.merged_document_id ? (
+                      <div className="mt-2 text-xs text-emerald-700">已生成整合文档：{item.merged_document_id}</div>
+                    ) : null}
+                    {item.status === 'pending' ? (
+                      <div className="mt-3 space-y-3">
+                        <label className="flex items-center gap-2 text-xs text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(mergeArchiveSources[item.suggestion_id])}
+                            onChange={(event) => setMergeArchiveSources((current) => ({ ...current, [item.suggestion_id]: event.target.checked }))}
+                          />
+                          同时归档来源文档（原文件保留，仅退出检索）
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          disabled={mergeReviewingId === item.suggestion_id}
+                          onClick={async () => {
+                            try {
+                              setMergeReviewingId(item.suggestion_id);
+                              await reviewKnowledgeMergeSuggestion(item.suggestion_id, true, '确认整合相似知识', Boolean(mergeArchiveSources[item.suggestion_id]));
+                              await loadMergeSuggestions();
+                            } catch (error) {
+                              alert(error instanceof Error ? error.message : '通过整合建议失败');
+                            } finally {
+                              setMergeReviewingId(null);
+                            }
+                          }}
+                        >
+                          通过并生成整合文档
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={mergeReviewingId === item.suggestion_id}
+                          onClick={async () => {
+                            try {
+                              setMergeReviewingId(item.suggestion_id);
+                              await reviewKnowledgeMergeSuggestion(item.suggestion_id, false, '暂不整合');
+                              await loadMergeSuggestions();
+                            } catch (error) {
+                              alert(error instanceof Error ? error.message : '拒绝整合建议失败');
+                            } finally {
+                              setMergeReviewingId(null);
+                            }
+                          }}
+                        >
+                          拒绝
+                        </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
       <section className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <Card className="border-slate-200 bg-white shadow-sm">
           <CardHeader className="border-b border-slate-100 pb-4">

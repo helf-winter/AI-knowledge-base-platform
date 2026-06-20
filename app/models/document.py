@@ -35,6 +35,7 @@ class Document(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     chunks: Mapped[list["DocumentChunk"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+    tags: Mapped[list["Tag"]] = relationship("Tag", secondary="document_tags")
 
 
 class DocumentChunk(Base):
@@ -148,6 +149,29 @@ class PublicKnowledgeSuggestion(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
     reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class KnowledgeMergeSuggestion(Base):
+    __tablename__ = "knowledge_merge_suggestions"
+
+    suggestion_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_document_ids: Mapped[str] = mapped_column(Text, nullable=False)
+    suggested_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    suggested_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    suggested_outline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_content: Mapped[str] = mapped_column(Text, nullable=False)
+    similarity_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    generation_method: Mapped[str] = mapped_column(String(32), nullable=False, default="rule_fallback", server_default="rule_fallback")
+    conflict_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_attributions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
+    requester_id: Mapped[str | None] = mapped_column(String(36), index=True, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    merged_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.document_id", ondelete="SET NULL"), index=True, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

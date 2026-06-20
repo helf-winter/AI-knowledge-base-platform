@@ -4,16 +4,14 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, func, select, inspect, text
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import NotFoundAppError, ValidationAppError
-from app.models.core import Answer, ExpertAgentProfile, KnowledgeMetadata, Session as ChatSession
+from app.models.core import Answer, AuditLog, ExpertAgentProfile, KnowledgeMetadata
 from app.models.document import Document
-from app.models.core import AuditLog
 from app.schemas.admin import (
     ExpertAgentCreate,
-    ExpertAgentRead,
     KnowledgeHotnessRead,
     KnowledgeMetadataCreate,
     KnowledgeMetadataUpdate,
@@ -95,25 +93,17 @@ class KnowledgeAdminService:
         existed = self.db.execute(select(ExpertAgentProfile).where(ExpertAgentProfile.agent_name == payload.name)).scalar_one_or_none()
         if existed:
             raise ValidationAppError("该专家 Agent 名称已存在")
+        values = dict(
+            agent_id=str(uuid.uuid4()),
+            agent_name=payload.name,
+            domain_name=payload.knowledge_domain,
+            description=payload.description,
+            knowledge_scope_json=payload.knowledge_scope_json,
+            status=payload.status,
+        )
         if self._expert_agent_supports_skills_json():
-            item = ExpertAgentProfile(
-                agent_id=str(uuid.uuid4()),
-                agent_name=payload.name,
-                domain_name=payload.knowledge_domain,
-                description=payload.description,
-                knowledge_scope_json=payload.knowledge_scope_json,
-                skills_json=payload.skills_json,
-                status=payload.status,
-            )
-        else:
-            item = ExpertAgentProfile(
-                agent_id=str(uuid.uuid4()),
-                agent_name=payload.name,
-                domain_name=payload.knowledge_domain,
-                description=payload.description,
-                knowledge_scope_json=payload.knowledge_scope_json,
-                status=payload.status,
-            )
+            values["skills_json"] = payload.skills_json
+        item = ExpertAgentProfile(**values)
         self.db.add(item)
         self.db.commit()
         self.db.refresh(item)
@@ -172,39 +162,66 @@ class KnowledgeAdminService:
         docs = self.db.execute(select(Document.document_id, Document.file_name).order_by(Document.created_at.desc()).limit(limit)).all()
         items: list[KnowledgeHotnessRead] = []
         for doc_id, file_name in docs:
-            search_count = self.db.execute(select(func.count(AuditLog.log_id)).where(AuditLog.action.in_(["search_knowledge", "chat_stream"]), AuditLog.payload_json.contains(doc_id))).scalar_one() or 0
+            search_count = self.db.execute(
+                select(func.count(AuditLog.log_id)).where(
+                    AuditLog.action.in_(["search_knowledge", "chat_stream"]),
+                    AuditLog.payload_json.contains(doc_id),
+                )
+            ).scalar_one() or 0
             answer_count = self.db.execute(select(func.count(Answer.answer_id)).where(Answer.query_text.contains(file_name))).scalar_one() or 0
-            items.append(KnowledgeHotnessRead(document_id=doc_id, title=file_name, search_count=int(search_count), answer_count=int(answer_count), total_hotness=int(search_count) + int(answer_count)))
+            items.append(
+                KnowledgeHotnessRead(
+                    document_id=doc_id,
+                    title=file_name,
+                    search_count=int(search_count),
+                    answer_count=int(answer_count),
+                    total_hotness=int(search_count) + int(answer_count),
+                )
+            )
         return items
 
     def catalog_skills(self) -> list[SkillDescriptor]:
         return [
             SkillDescriptor(
                 skill_id="knowledge_search",
-                name="Knowledge Search",
+                name="查找制度依据",
                 version="v1",
-                description="基于知识库检索相关内容",
-                capabilities=["search", "retrieve", "qa_context"],
+                description="从用户可访问的知识库中检索依据、来源和可引用片段，用于制度问答和专家回答。",
+                capabilities=["知识检索", "依据引用", "问答上下文"],
             ),
             SkillDescriptor(
                 skill_id="document_summarize",
-                name="Document Summarize",
+                name="总结文档",
                 version="v1",
-                description="对文档内容进行摘要提炼",
-                capabilities=["summarize", "extract_key_points"],
+                description="把长文档整理成摘要、要点和适用场景，帮助用户快速理解知识内容。",
+                capabilities=["文档摘要", "关键要点", "阅读辅助"],
             ),
             SkillDescriptor(
                 skill_id="knowledge_extract",
-                name="Knowledge Extract",
+                name="提取流程步骤",
                 version="v1",
-                description="从内容中抽取结构化知识",
-                capabilities=["extract", "structure"],
+                description="从文档或回答中提取流程、条件、注意事项和结构化知识。",
+                capabilities=["流程提取", "知识结构化", "生成培训题"],
             ),
             SkillDescriptor(
                 skill_id="knowledge_compare",
-                name="Knowledge Compare",
+                name="对比知识差异",
                 version="v1",
-                description="对两段知识内容进行对比分析",
-                capabilities=["compare", "diff"],
+                description="对比不同知识片段、版本或草稿之间的差异，辅助审核与更新。",
+                capabilities=["差异对比", "版本核查", "冲突发现"],
+            ),
+            SkillDescriptor(
+                skill_id="knowledge_gap_detect",
+                name="发现知识缺口",
+                version="v1",
+                description="根据低置信度回答、用户反馈和通用兜底回答发现需要补充的知识。",
+                capabilities=["缺口识别", "自动学习", "待补充问题"],
+            ),
+            SkillDescriptor(
+                skill_id="publish_draft_generate",
+                name="生成发布草稿",
+                version="v1",
+                description="把个人知识或问答补充内容整理为可提交审核的公有知识草稿。",
+                capabilities=["草稿生成", "发布审核", "知识治理"],
             ),
         ]

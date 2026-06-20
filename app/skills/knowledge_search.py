@@ -73,9 +73,38 @@ class KnowledgeSearchSkill:
         categories = {str(item) for item in scope.get("knowledge_categories", []) if str(item).strip()}
         if categories and getattr(document, "knowledge_category", None) not in categories:
             return False
+        tags = {str(item) for item in scope.get("tags", []) if str(item).strip()}
+        if tags and not (tags & self._document_tags(document)):
+            return False
+        knowledge_spaces = {str(item) for item in scope.get("knowledge_spaces", []) if str(item).strip()}
+        if knowledge_spaces and getattr(document, "knowledge_space", None) not in knowledge_spaces:
+            return False
+        file_types = {str(item).lower() for item in scope.get("file_types", []) if str(item).strip()}
+        if file_types and str(getattr(document, "file_type", "")).lower() not in file_types:
+            return False
+        allowed_jobs = {str(item) for item in scope.get("allowed_job_categories", []) if str(item).strip()}
+        if allowed_jobs and not (allowed_jobs & self._split_values(getattr(document, "allowed_job_categories", None))):
+            return False
         keywords = [str(item).lower() for item in scope.get("keywords", []) if str(item).strip()]
         if keywords:
             haystack = " ".join(filter(None, [getattr(document, "file_name", ""), content])).lower()
             if not any(keyword in haystack for keyword in keywords):
                 return False
         return True
+
+    def _document_tags(self, document: Any) -> set[str]:
+        raw_tags = getattr(document, "tags", None) or []
+        names: set[str] = set()
+        for item in raw_tags:
+            if isinstance(item, str):
+                names.add(item)
+            else:
+                tag_name = getattr(item, "tag_name", None)
+                if tag_name:
+                    names.add(str(tag_name))
+        return names
+
+    def _split_values(self, value: str | None) -> set[str]:
+        if not value:
+            return set()
+        return {item.strip() for item in value.replace("，", ",").replace("；", ",").replace(";", ",").split(",") if item.strip()}

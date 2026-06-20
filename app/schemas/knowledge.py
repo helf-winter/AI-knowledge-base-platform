@@ -103,11 +103,24 @@ class SearchRequest(BaseModel):
     user_id: str
     session_id: str | None = None
     top_k: int = Field(default=5, ge=1, le=20)
+    knowledge_categories: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    knowledge_spaces: list[str] = Field(default_factory=list)
+    file_types: list[str] = Field(default_factory=list)
+    allowed_job_categories: list[str] = Field(default_factory=list)
 
 
 class SearchResponse(BaseModel):
     query: str
     results: list[ChunkItem]
+
+
+class KnowledgeFilterOptions(BaseModel):
+    knowledge_categories: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    knowledge_spaces: list[str] = Field(default_factory=list)
+    file_types: list[str] = Field(default_factory=list)
+    allowed_job_categories: list[str] = Field(default_factory=list)
 
 
 class ChatRequest(BaseModel):
@@ -279,3 +292,35 @@ class PublicKnowledgeSuggestionRead(BaseModel):
 class PublicKnowledgeSuggestionReview(BaseModel):
     status: str = Field(pattern="^(accepted|rejected|need_more_info)$")
     review_comment: str = Field(min_length=1, max_length=1000)
+
+
+class KnowledgeMergeScanRequest(BaseModel):
+    min_score: float = Field(default=0.3, ge=0.0, le=1.0)
+
+
+class KnowledgeMergeSuggestionRead(BaseModel):
+    suggestion_id: str
+    source_document_ids: list[str]
+    source_document_names: list[str] = Field(default_factory=list)
+    suggested_title: str
+    suggested_category: str | None = None
+    suggested_outline: str | None = None
+    suggested_content: str
+    similarity_reason: str
+    generation_method: str = "rule_fallback"
+    conflict_notes: str | None = None
+    source_attributions: str | None = None
+    status: str
+    requester_id: str | None = None
+    reviewed_by: str | None = None
+    review_comment: str | None = None
+    merged_document_id: str | None = None
+    reviewed_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class KnowledgeMergeReviewRequest(BaseModel):
+    approve: bool
+    review_comment: str | None = Field(default=None, max_length=1000)
+    archive_sources: bool = False

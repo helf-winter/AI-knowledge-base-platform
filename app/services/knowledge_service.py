@@ -16,7 +16,7 @@ from app.core.config import get_settings
 from app.core.exceptions import PermissionAppError, ValidationAppError
 from app.core.skills import SkillRegistry
 from app.models.conversation import ConversationTurn
-from app.models.core import KnowledgeMetadata, TaskRecord
+from app.models.core import DocumentTag, KnowledgeMetadata, Tag, TaskRecord
 from app.models.document import Document, DocumentChunk, Feedback, PublicKnowledgeRef
 from app.models.vector import ChunkEmbedding
 from app.schemas.flywheel import KnowledgeGapCreate
@@ -307,9 +307,35 @@ class KnowledgeService:
                 acl_json=None,
             )
         )
+        self._sync_document_tags(document.document_id, payload.tags)
         self.db.commit()
         self.db.refresh(document)
         return document
+
+    def _sync_document_tags(self, document_id: str, raw_tags: str | None) -> None:
+        tag_names = self._parse_tag_names(raw_tags)
+        if not tag_names:
+            return
+        for tag_name in tag_names:
+            existing = self.db.execute(select(Tag).where(Tag.tag_name == tag_name)).scalar_one_or_none()
+            tag = existing or Tag(tag_id=str(uuid.uuid4()), tag_name=tag_name, tag_type="business")
+            if existing is None:
+                self.db.add(tag)
+                self.db.flush()
+            self.db.add(DocumentTag(document_id=document_id, tag_id=tag.tag_id))
+
+    def _parse_tag_names(self, raw_tags: str | None) -> list[str]:
+        if not raw_tags:
+            return []
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in raw_tags.replace("，", ",").replace("；", ",").replace(";", ",").split(","):
+            name = item.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name[:64])
+        return names
 
     def _build_manual_knowledge_content(self, payload: ManualKnowledgeCreate, title: str, content: str, category: str) -> str:
         lines = [f"# {title}", "", f"知识类别：{category}"]

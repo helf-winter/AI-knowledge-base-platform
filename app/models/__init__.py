@@ -11,7 +11,7 @@ from app.models.core import (
     User,
     UserRole,
 )
-from app.models.document import AccessRequest, Document, DocumentAccessGrant, DocumentChunk, Feedback, KnowledgePublishRequest, PublicKnowledgeRef
+from app.models.document import AccessRequest, Document, DocumentAccessGrant, DocumentChunk, Feedback, KnowledgeMergeSuggestion, KnowledgePublishRequest, PublicKnowledgeRef
 from app.models.vector import ChunkEmbedding
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "DocumentChunk",
     "AccessRequest",
     "KnowledgePublishRequest",
+    "KnowledgeMergeSuggestion",
     "PublicKnowledgeRef",
     "DocumentTag",
     "Feedback",

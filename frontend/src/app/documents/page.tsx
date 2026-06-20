@@ -124,6 +124,30 @@ type ManualKnowledgeDraft = {
   content: string;
 };
 
+type KnowledgeFilterOptions = {
+  knowledge_categories: string[];
+  tags: string[];
+  knowledge_spaces: string[];
+  file_types: string[];
+  allowed_job_categories: string[];
+};
+
+type SearchFilters = {
+  knowledgeCategories: string[];
+  tags: string[];
+  knowledgeSpaces: string[];
+  fileTypes: string[];
+  allowedJobCategories: string[];
+};
+
+const EMPTY_SEARCH_FILTERS: SearchFilters = {
+  knowledgeCategories: [],
+  tags: [],
+  knowledgeSpaces: [],
+  fileTypes: [],
+  allowedJobCategories: [],
+};
+
 const FILE_HINTS: Record<string, string> = {
   pdf: 'PDF 文档',
   docx: 'Word 文档',
@@ -201,11 +225,33 @@ async function createManualKnowledge(draft: ManualKnowledgeDraft) {
   return res.json();
 }
 
-async function searchKnowledge(query: string) {
+async function fetchKnowledgeFilterOptions() {
+  const res = await authedFetch(`${API_BASE}/api/v1/knowledge/filter-options`);
+  if (!res.ok) throw new Error('加载筛选项失败');
+  const json = await res.json();
+  return (json.data ?? {
+    knowledge_categories: [],
+    tags: [],
+    knowledge_spaces: [],
+    file_types: [],
+    allowed_job_categories: [],
+  }) as KnowledgeFilterOptions;
+}
+
+async function searchKnowledge(query: string, searchFilters: SearchFilters) {
   const res = await authedFetch(`${API_BASE}/api/v1/knowledge/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, user_id: getCurrentUserId() || 'anonymous', top_k: 8 }),
+    body: JSON.stringify({
+      query,
+      user_id: getCurrentUserId() || 'anonymous',
+      top_k: 8,
+      knowledge_categories: searchFilters.knowledgeCategories,
+      tags: searchFilters.tags,
+      knowledge_spaces: searchFilters.knowledgeSpaces,
+      file_types: searchFilters.fileTypes,
+      allowed_job_categories: searchFilters.allowedJobCategories,
+    }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -332,6 +378,14 @@ export default function DocumentsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [filterOptions, setFilterOptions] = useState<KnowledgeFilterOptions>({
+    knowledge_categories: [],
+    tags: [],
+    knowledge_spaces: [],
+    file_types: [],
+    allowed_job_categories: [],
+  });
+  const [searchFilters, setSearchFilters] = useState<SearchFilters>(EMPTY_SEARCH_FILTERS);
   const [requestTarget, setRequestTarget] = useState<AccessRequestTarget | null>(null);
   const [requestReason, setRequestReason] = useState('');
   const [businessPurpose, setBusinessPurpose] = useState('');
@@ -390,6 +444,9 @@ export default function DocumentsPage() {
 
   useEffect(() => {
     void load();
+    void fetchKnowledgeFilterOptions()
+      .then(setFilterOptions)
+      .catch((error) => console.warn(error));
     if (!isAdminUser) {
       void loadMyRequests();
       void loadMyPublishRequests();
@@ -509,6 +566,21 @@ export default function DocumentsPage() {
     });
   };
 
+  const toggleSearchFilter = (key: keyof SearchFilters, value: string) => {
+    setSearchFilters((current) => {
+      const values = current[key];
+      const nextValues = values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+      return { ...current, [key]: nextValues };
+    });
+  };
+
+  const hasActiveSearchFilters =
+    searchFilters.knowledgeCategories.length > 0 ||
+    searchFilters.tags.length > 0 ||
+    searchFilters.knowledgeSpaces.length > 0 ||
+    searchFilters.fileTypes.length > 0 ||
+    searchFilters.allowedJobCategories.length > 0;
+
   const canPublishDocument = (doc: DocumentItem | null) =>
     Boolean(
       doc &&
@@ -537,7 +609,7 @@ export default function DocumentsPage() {
                 onClick={async () => {
                   try {
                     setSearchLoading(true);
-                    const items = await searchKnowledge(searchQuery);
+                    const items = await searchKnowledge(searchQuery, searchFilters);
                     setSearchResults(items);
                   } catch (error) {
                     alert(error instanceof Error ? error.message : '检索失败');
@@ -554,11 +626,69 @@ export default function DocumentsPage() {
                 onClick={() => {
                   setSearchQuery('');
                   setSearchResults([]);
+                  setSearchFilters(EMPTY_SEARCH_FILTERS);
                 }}
               >
                 清空结果
               </Button>
             </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-medium text-slate-900">标签筛选</div>
+              {hasActiveSearchFilters && (
+                <Button size="sm" variant="ghost" onClick={() => setSearchFilters(EMPTY_SEARCH_FILTERS)}>
+                  清空筛选
+                </Button>
+              )}
+            </div>
+            <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+              <label className="space-y-1 text-xs font-medium text-slate-700">
+                知识类别
+                <select className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-900" value="" onChange={(event) => event.target.value && toggleSearchFilter('knowledgeCategories', event.target.value)}>
+                  <option value="">选择类别</option>
+                  {filterOptions.knowledge_categories.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-xs font-medium text-slate-700">
+                标签
+                <select className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-900" value="" onChange={(event) => event.target.value && toggleSearchFilter('tags', event.target.value)}>
+                  <option value="">选择标签</option>
+                  {filterOptions.tags.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-xs font-medium text-slate-700">
+                知识空间
+                <select className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-900" value="" onChange={(event) => event.target.value && toggleSearchFilter('knowledgeSpaces', event.target.value)}>
+                  <option value="">选择空间</option>
+                  {filterOptions.knowledge_spaces.map((item) => <option key={item} value={item}>{knowledgeSpaceLabel(item)}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-xs font-medium text-slate-700">
+                文件类型
+                <select className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-900" value="" onChange={(event) => event.target.value && toggleSearchFilter('fileTypes', event.target.value)}>
+                  <option value="">选择类型</option>
+                  {filterOptions.file_types.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-xs font-medium text-slate-700">
+                可访问人员
+                <select className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-900" value="" onChange={(event) => event.target.value && toggleSearchFilter('allowedJobCategories', event.target.value)}>
+                  <option value="">选择人员范围</option>
+                  {filterOptions.allowed_job_categories.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+            </div>
+            {hasActiveSearchFilters && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {searchFilters.knowledgeCategories.map((item) => <Badge key={`category-${item}`} onClick={() => toggleSearchFilter('knowledgeCategories', item)} className="cursor-pointer bg-blue-50 text-blue-700 hover:bg-blue-100">类别：{item}</Badge>)}
+                {searchFilters.tags.map((item) => <Badge key={`tag-${item}`} onClick={() => toggleSearchFilter('tags', item)} className="cursor-pointer bg-emerald-50 text-emerald-700 hover:bg-emerald-100">标签：{item}</Badge>)}
+                {searchFilters.knowledgeSpaces.map((item) => <Badge key={`space-${item}`} onClick={() => toggleSearchFilter('knowledgeSpaces', item)} className="cursor-pointer bg-violet-50 text-violet-700 hover:bg-violet-100">空间：{knowledgeSpaceLabel(item)}</Badge>)}
+                {searchFilters.fileTypes.map((item) => <Badge key={`file-${item}`} onClick={() => toggleSearchFilter('fileTypes', item)} className="cursor-pointer bg-slate-100 text-slate-700 hover:bg-slate-200">类型：{item}</Badge>)}
+                {searchFilters.allowedJobCategories.map((item) => <Badge key={`job-${item}`} onClick={() => toggleSearchFilter('allowedJobCategories', item)} className="cursor-pointer bg-amber-50 text-amber-700 hover:bg-amber-100">人员：{item}</Badge>)}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap gap-2">

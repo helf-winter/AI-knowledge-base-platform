@@ -41,7 +41,7 @@ class HybridRetriever:
             select(ChunkEmbedding, ChunkEmbedding.vector.cosine_distance(qvec).label("distance"))
             .join(DocumentChunk)
             .join(Document)
-            .where(Document.parse_status == "succeeded")
+            .where(Document.parse_status == "succeeded", Document.document_status == "active")
             .order_by("distance")
             .limit(max(top_k * 5, 20))
         ).all()
@@ -61,7 +61,7 @@ class HybridRetriever:
         keyword_rows = self.db.execute(
             select(DocumentChunk)
             .join(Document)
-            .where(Document.parse_status == "succeeded")
+            .where(Document.parse_status == "succeeded", Document.document_status == "active")
             .where(func.lower(DocumentChunk.content).like(f"%{lowered}%"))
             .limit(max(top_k * 5, 20))
         ).scalars().all()

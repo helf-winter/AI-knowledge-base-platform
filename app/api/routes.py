@@ -16,8 +16,8 @@ from app.agents.review_agent import ReviewAgent
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_roles
-from app.models.core import AuditLog
-from app.models.document import Document
+from app.models.core import AuditLog, DocumentTag, Tag
+from app.models.document import Document, KnowledgeMergeSuggestion
 from app.schemas.admin import ExpertAgentCreate, ExpertAgentRead, KnowledgeHotnessRead, KnowledgeMetadataCreate, KnowledgeMetadataRead, KnowledgeMetadataUpdate, SkillDescriptor
 from app.schemas.audit import AuditLogRead
 from app.schemas.auth import ChangeInitialPasswordRequest, CurrentUserRead, LoginRequest, RegisterRequest, TokenResponse, VerifyPasswordRequest
@@ -26,7 +26,7 @@ from app.schemas.common import APIResponse
 from app.schemas.conversation import ConversationTurnCreate, ConversationTurnRead
 from app.schemas.evaluation import EvaluationCaseCreate, EvaluationCaseRead, EvaluationRunCreate, EvaluationRunRead, EvaluationResultRead
 from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead, LearningGapDraftCreate, LearningGapDraftRead, LearningGapDraftReview
-from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, ManualKnowledgeCreate, PublicKnowledgeRefRead, PublicKnowledgeSuggestionCreate, PublicKnowledgeSuggestionRead, PublicKnowledgeSuggestionReview, SearchRequest, SearchResponse
+from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgeFilterOptions, KnowledgeMergeReviewRequest, KnowledgeMergeScanRequest, KnowledgeMergeSuggestionRead, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, ManualKnowledgeCreate, PublicKnowledgeRefRead, PublicKnowledgeSuggestionCreate, PublicKnowledgeSuggestionRead, PublicKnowledgeSuggestionReview, SearchRequest, SearchResponse
 from app.schemas.observability import AlertEventRead, AlertRuleCreate, AlertRuleRead, MetricSnapshotCreate
 from app.schemas.review import ReviewRequest
 from app.schemas.task import TaskRead
@@ -38,6 +38,7 @@ from app.services.conversation import ConversationService
 from app.services.evaluation import EvaluationService
 from app.services.flywheel import KnowledgeFlywheelService
 from app.services.knowledge_admin import KnowledgeAdminService
+from app.services.knowledge_merge import KnowledgeMergeService
 from app.services.knowledge_publish import KnowledgePublishService, KnowledgeSuggestionService
 from app.services.knowledge_service import KnowledgeService
 from app.services.observability import ObservabilityService
@@ -63,6 +64,16 @@ def _handle_app_error(exc: Exception) -> None:
     elif getattr(exc, "code", None) == "VALIDATION_ERROR":
         status_code = 422
     raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
+def _split_filter_values(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {
+        item.strip()
+        for item in value.replace("，", ",").replace("；", ",").replace(";", ",").split(",")
+        if item.strip()
+    }
 
 
 def _normalize_session_id(session_id: str | None, user_id: str) -> str:
@@ -226,6 +237,35 @@ def _public_ref_response(item, service: KnowledgePublishService | None = None) -
         created_by=item.created_by,
         disabled_by=item.disabled_by,
         disabled_at=item.disabled_at.isoformat() if item.disabled_at else None,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+        updated_at=item.updated_at.isoformat() if item.updated_at else None,
+    )
+
+
+def _merge_suggestion_response(item: KnowledgeMergeSuggestion, service: KnowledgeMergeService) -> KnowledgeMergeSuggestionRead:
+    try:
+        source_ids = json.loads(item.source_document_ids)
+    except Exception:
+        source_ids = []
+    documents = service.source_documents(item)
+    return KnowledgeMergeSuggestionRead(
+        suggestion_id=item.suggestion_id,
+        source_document_ids=[str(value) for value in source_ids],
+        source_document_names=[document.file_name for document in documents],
+        suggested_title=item.suggested_title,
+        suggested_category=item.suggested_category,
+        suggested_outline=item.suggested_outline,
+        suggested_content=item.suggested_content,
+        similarity_reason=item.similarity_reason,
+        generation_method=item.generation_method,
+        conflict_notes=item.conflict_notes,
+        source_attributions=item.source_attributions,
+        status=item.status,
+        requester_id=item.requester_id,
+        reviewed_by=item.reviewed_by,
+        review_comment=item.review_comment,
+        merged_document_id=item.merged_document_id,
+        reviewed_at=item.reviewed_at.isoformat() if item.reviewed_at else None,
         created_at=item.created_at.isoformat() if item.created_at else None,
         updated_at=item.updated_at.isoformat() if item.updated_at else None,
     )
@@ -685,7 +725,14 @@ def retry_document_parse(document_id: str, request: Request, db: Session = Depen
 @router.post("/knowledge/search", response_model=APIResponse[SearchResponse])
 def search_knowledge(payload: SearchRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
     try:
-        hits = KnowledgeService(db).search(query=payload.query, top_k=payload.top_k, user_id=user.user_id)
+        scope = {
+            "knowledge_categories": payload.knowledge_categories,
+            "tags": payload.tags,
+            "knowledge_spaces": payload.knowledge_spaces,
+            "file_types": payload.file_types,
+            "allowed_job_categories": payload.allowed_job_categories,
+        }
+        hits = KnowledgeService(db).search(query=payload.query, top_k=payload.top_k, user_id=user.user_id, scope=scope)
         access = DocumentAccessService(db)
         results = []
         for item in hits:
@@ -696,6 +743,40 @@ def search_knowledge(payload: SearchRequest, db: Session = Depends(get_db), user
         return APIResponse(data=SearchResponse(query=payload.query, results=results))
     except Exception as exc:
         _handle_app_error(exc)
+
+
+@router.get("/knowledge/filter-options", response_model=APIResponse[KnowledgeFilterOptions])
+def knowledge_filter_options(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    access = DocumentAccessService(db)
+    service = KnowledgeService(db)
+    documents = service.list_documents(limit=200, offset=0)
+    visible = [document for document in documents if access.can_access_document(document, user).can_access]
+    document_ids = [document.document_id for document in visible]
+
+    tag_names: set[str] = set()
+    if document_ids:
+        tag_names = {
+            row[0]
+            for row in db.execute(
+                select(Tag.tag_name)
+                .join(DocumentTag, DocumentTag.tag_id == Tag.tag_id)
+                .where(DocumentTag.document_id.in_(document_ids))
+            ).all()
+            if row[0]
+        }
+
+    allowed_jobs: set[str] = set()
+    for document in visible:
+        allowed_jobs.update(_split_filter_values(document.allowed_job_categories))
+
+    data = KnowledgeFilterOptions(
+        knowledge_categories=sorted({document.knowledge_category for document in visible if document.knowledge_category}),
+        tags=sorted(tag_names),
+        knowledge_spaces=sorted({document.knowledge_space for document in visible if document.knowledge_space}),
+        file_types=sorted({document.file_type for document in visible if document.file_type}),
+        allowed_job_categories=sorted(allowed_jobs),
+    )
+    return APIResponse(data=data)
 
 
 @router.get("/knowledge/documents/{document_id}/access-check", response_model=APIResponse[AccessCheckResponse])
@@ -811,6 +892,55 @@ def list_my_public_knowledge_suggestions(db: Session = Depends(get_db), user=Dep
     return APIResponse(data=[_suggestion_response(item, service) for item in items])
 
 
+@router.post("/knowledge/merge-suggestions/scan", response_model=APIResponse[list[KnowledgeMergeSuggestionRead]])
+def scan_knowledge_merge_suggestions(payload: KnowledgeMergeScanRequest, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    try:
+        service = KnowledgeMergeService(db)
+        items = service.scan(user=user, min_score=payload.min_score)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="scan_knowledge_merge_suggestions",
+            resource_type="knowledge_merge_suggestion",
+            resource_id="batch",
+            trace_id=_trace_id_from_request(request),
+            payload={"count": len(items), "min_score": payload.min_score},
+        )
+        return APIResponse(data=[_merge_suggestion_response(item, service) for item in items])
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
+@router.get("/knowledge/merge-suggestions/my", response_model=APIResponse[list[KnowledgeMergeSuggestionRead]])
+def list_my_knowledge_merge_suggestions(status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"), db: Session = Depends(get_db), user=Depends(get_current_user)):
+    service = KnowledgeMergeService(db)
+    items = service.list_suggestions(user=user, status=status, admin_view=False)
+    return APIResponse(data=[_merge_suggestion_response(item, service) for item in items])
+
+
+@router.post("/knowledge/merge-suggestions/{suggestion_id}/review", response_model=APIResponse[KnowledgeMergeSuggestionRead])
+def review_my_knowledge_merge_suggestion(suggestion_id: str, payload: KnowledgeMergeReviewRequest, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    try:
+        service = KnowledgeMergeService(db)
+        item = service.review(
+            suggestion_id=suggestion_id,
+            approve=payload.approve,
+            reviewer=user,
+            review_comment=payload.review_comment,
+            archive_sources=payload.archive_sources,
+        )
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="review_knowledge_merge_suggestion",
+            resource_type="knowledge_merge_suggestion",
+            resource_id=suggestion_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"status": item.status, "merged_document_id": item.merged_document_id, "archive_sources": payload.archive_sources},
+        )
+        return APIResponse(data=_merge_suggestion_response(item, service))
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
 @router.get("/admin/publish-requests", response_model=APIResponse[list[KnowledgePublishRequestRead]])
 def list_admin_publish_requests(status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"), db: Session = Depends(get_db), _user=Depends(require_roles("admin", "reviewer"))):
     service = KnowledgePublishService(db)
@@ -857,6 +987,37 @@ def review_admin_knowledge_suggestion(suggestion_id: str, payload: PublicKnowled
             payload={"document_id": item.document_id, "status": item.status},
         )
         return APIResponse(data=_suggestion_response(item, service))
+    except Exception as exc:
+        _handle_app_error(exc)
+
+
+@router.get("/admin/knowledge-merge-suggestions", response_model=APIResponse[list[KnowledgeMergeSuggestionRead]])
+def list_admin_knowledge_merge_suggestions(status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"), db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
+    service = KnowledgeMergeService(db)
+    items = service.list_suggestions(user=user, status=status, admin_view=True)
+    return APIResponse(data=[_merge_suggestion_response(item, service) for item in items])
+
+
+@router.post("/admin/knowledge-merge-suggestions/{suggestion_id}/review", response_model=APIResponse[KnowledgeMergeSuggestionRead])
+def review_admin_knowledge_merge_suggestion(suggestion_id: str, payload: KnowledgeMergeReviewRequest, request: Request, db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
+    try:
+        service = KnowledgeMergeService(db)
+        item = service.review(
+            suggestion_id=suggestion_id,
+            approve=payload.approve,
+            reviewer=user,
+            review_comment=payload.review_comment,
+            archive_sources=payload.archive_sources,
+        )
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="review_knowledge_merge_suggestion",
+            resource_type="knowledge_merge_suggestion",
+            resource_id=suggestion_id,
+            trace_id=_trace_id_from_request(request),
+            payload={"status": item.status, "merged_document_id": item.merged_document_id, "archive_sources": payload.archive_sources},
+        )
+        return APIResponse(data=_merge_suggestion_response(item, service))
     except Exception as exc:
         _handle_app_error(exc)
 

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     embedding_device: str = Field(default="cpu")
     embedding_batch_size: int = 16
     embedding_dimension: int = 1024
+    knowledge_merge_max_suggestions: int = 8
     background_parse_threshold_mb: int = 20
     parse_task_stale_minutes: int = 60
     max_upload_size_mb: int = 20

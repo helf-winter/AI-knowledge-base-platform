@@ -19,6 +19,54 @@ class DeepSeekClient:
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
+    def complete_json(
+        self,
+        system_prompt: str,
+        payload: dict[str, object],
+        *,
+        temperature: float = 0.1,
+        timeout: float = 60.0,
+    ) -> dict[str, object] | None:
+        """Request one structured JSON object, returning None for a safe fallback."""
+        if not self.is_configured():
+            return None
+        request_payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            "stream": False,
+            "temperature": temperature,
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=request_payload,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            return self._parse_json_object(str(content))
+        except Exception:
+            return None
+
+    def _parse_json_object(self, content: str) -> dict[str, object] | None:
+        text = content.strip()
+        if not text:
+            return None
+        if text.startswith("```"):
+            text = text.strip("`").strip()
+            if text.lower().startswith("json"):
+                text = text[4:].strip()
+        try:
+            parsed = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
     def build_messages(
         self,
         question: str,
