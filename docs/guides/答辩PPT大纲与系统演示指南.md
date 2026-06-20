@@ -111,10 +111,11 @@
 | PostgreSQL 数据库 | 已完成 | 使用 PostgreSQL 存储业务数据。 |
 | pgvector 向量检索 | 已完成 | 用于语义检索。 |
 | Alembic 迁移 | 已完成 | 数据库结构通过迁移管理。 |
-| Docker Compose 部署 | 已完成 | 提供前端、后端、PostgreSQL 的容器化部署。 |
+| Docker Compose 部署 | 已完成 | 提供前端、后端、Worker、Redis、PostgreSQL/pgvector 五服务部署。 |
 | 一键启动脚本 | 已完成 | Windows 本地可通过 start.ps1 / start.bat 启动。 |
 | 测试与构建检查 | 已完成 | 后端 compileall、单测、前端 build 已多次验证。 |
-| Redis 队列 | 部分使用/待完善 | 当前可按后台任务思路运行，后续可进一步标准化 Redis + Worker 部署。 |
+| Redis + Celery 队列 | 已完成 | 大文件解析进入Redis队列，由独立Celery Worker消费，最终状态写入PostgreSQL。 |
+| CPU版AI镜像 | 已完成 | Docker后端明确安装CPU版PyTorch，避免引入无用CUDA运行库。 |
 | MinIO 对象存储 | 待完善 | 当前原始文件主要使用本地存储，后续生产部署建议迁移到 MinIO。 |
 
 ## 3. 与课题要求的对应关系
@@ -427,7 +428,8 @@ AI 草稿
 
 - 前后端分离。
 - Alembic 数据库迁移。
-- Docker Compose 部署。
+- Docker Compose 五服务部署：前端、后端、Worker、Redis、PostgreSQL/pgvector。
+- 大文件通过Redis + Celery后台解析，任务最终状态持久化到PostgreSQL。
 - 一键启动脚本。
 - 测试验证：后端编译、单测、前端构建。
 
@@ -455,7 +457,7 @@ cd frontend && npm run build
 - 更完整的版本管理和回滚。
 - 更专业的重排序模型。
 - Skill 外部插件化。
-- MinIO/Redis 等生产级基础设施增强。
+- MinIO对象存储与分布式Worker扩展。
 - 更丰富的可视化图表。
 
 ### 第 15 页：总结
@@ -488,6 +490,13 @@ start.bat
 conda activate knowledge-base
 alembic upgrade head
 uvicorn app.main:app --reload
+```
+
+后台Worker（需先启动Redis）：
+
+```powershell
+conda activate knowledge-base
+celery -A app.worker.celery_app worker --pool=solo --loglevel=info
 ```
 
 前端：
@@ -896,13 +905,15 @@ alembic current
 当前：
 
 - 文件主要保存在本地。
-- 后台任务能力已具备。
+- Redis已作为Celery任务队列。
+- Celery Worker已在本地脚本和Docker Compose中独立启动。
+- 解析最终状态、进度和检查点保存在PostgreSQL。
 
 后续：
 
 - 原始文件迁移到 MinIO。
-- Redis 作为任务队列和临时状态缓存。
-- Worker 独立部署。
+- 根据负载横向扩展多个Worker。
+- 增加任务优先级、限流和监控告警。
 
 ### 7.5 可视化增强
 
