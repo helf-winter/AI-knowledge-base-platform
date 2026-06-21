@@ -57,6 +57,7 @@ class AuthService:
     def seed_default_admin(self) -> None:
         admin_department = self._get_or_create_department("平台管理部")
         it_department = self._get_or_create_department("信息技术部")
+        hr_department = self._get_or_create_department("人力资源部")
         admin_role = self._get_or_create_role("admin")
         user_role = self._get_or_create_role("user")
 
@@ -90,16 +91,17 @@ class AuthService:
         self._assign_role(admin.user_id, admin_role.role_id)
 
         demo_users = [
-            ("zhangsan", "E1001", "张三", "zhangsan@example.com", "研发工程师"),
-            ("lisi", "E1002", "李四", "lisi@example.com", "数据处理专员"),
-            ("wangwu", "E1003", "王五", "wangwu@example.com", "外观设计师"),
+            ("zhangsan", "E1001", "张三", "zhangsan@example.com", "研发工程师", it_department),
+            ("lisi", "E1002", "李四", "lisi@example.com", "数据处理专员", it_department),
+            ("wangwu", "E1003", "王五", "wangwu@example.com", "外观设计师", it_department),
+            ("zhaomin", "E1004", "赵敏", "zhaomin@example.com", "人力资源专员", hr_department),
         ]
-        for username, employee_no, display_name, email, position in demo_users:
+        for username, employee_no, display_name, email, position, department in demo_users:
             demo_user = self.db.execute(select(User).where(or_(User.username == username, User.employee_no == employee_no))).scalar_one_or_none()
             if demo_user is None:
                 demo_user = User(
                     user_id=str(uuid.uuid4()),
-                    department_id=it_department.department_id,
+                    department_id=department.department_id,
                     username=username,
                     employee_no=employee_no,
                     display_name=display_name,
@@ -115,7 +117,7 @@ class AuthService:
                 self.db.add(demo_user)
                 self.db.flush()
             else:
-                demo_user.department_id = demo_user.department_id or it_department.department_id
+                demo_user.department_id = demo_user.department_id or department.department_id
                 demo_user.employee_no = demo_user.employee_no or employee_no
                 demo_user.display_name = demo_user.display_name or display_name
                 demo_user.email = demo_user.email or email

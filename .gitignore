@@ -32,7 +32,11 @@ knowledge.db
 .DS_Store
 Thumbs.db
 
+# ppt
+ppt/
+
 #md
+docs/guides/答辩PPT大纲与系统演示指南.md
 docs/reference/
 problems.md
 需求文档.md

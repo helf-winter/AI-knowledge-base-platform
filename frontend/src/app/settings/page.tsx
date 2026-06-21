@@ -15,7 +15,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<SettingRow[]>([
     { label: 'API Base', value: API_BASE },
     { label: 'Model', value: 'deepseek' },
-    { label: 'Embedding', value: 'bge-m3 / 64 dim' },
+    { label: 'Embedding', value: 'bge-m3 / 1024 dim' },
     { label: 'Storage', value: 'PostgreSQL + pgvector' },
   ]);
   const [apiBase, setApiBase] = useState(API_BASE);
@@ -24,7 +24,7 @@ export default function SettingsPage() {
     setSettings([
       { label: 'API Base', value: apiBase },
       { label: 'Model', value: 'deepseek' },
-      { label: 'Embedding', value: 'bge-m3 / 64 dim' },
+      { label: 'Embedding', value: 'bge-m3 / 1024 dim' },
       { label: 'Storage', value: 'PostgreSQL + pgvector' },
     ]);
   }, [apiBase]);
