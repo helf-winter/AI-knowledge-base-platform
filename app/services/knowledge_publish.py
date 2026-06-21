@@ -6,10 +6,12 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.review_agent import ReviewAgent
 from app.core.exceptions import NotFoundAppError, PermissionAppError, ValidationAppError
 from app.models.core import User
 from app.models.document import Document, KnowledgePublishRequest, PublicKnowledgeRef, PublicKnowledgeSuggestion
 from app.schemas.knowledge import KnowledgePublishRequestCreate, PublicKnowledgeSuggestionCreate, PublicKnowledgeSuggestionReview
+from app.schemas.review import ReviewRequest
 from app.services.access_control import DocumentAccessService
 from app.services.auth import AuthenticatedUser
 
@@ -102,6 +104,49 @@ class KnowledgePublishService:
         if item is None:
             raise NotFoundAppError("发布申请不存在")
         return item
+
+    def build_ai_review(self, request_id: str) -> dict[str, str]:
+        item = self.get_request(request_id)
+        if item.status != "pending":
+            raise ValidationAppError("已审核的发布申请无需再次生成 AI 建议")
+
+        document = self.db.get(Document, item.document_id)
+        requester = self.db.get(User, item.requester_id)
+        result = ReviewAgent(self.db).review(
+            ReviewRequest(
+                review_type="knowledge_publish",
+                subject={
+                    "target_category": item.target_category,
+                    "allowed_job_categories": item.allowed_job_categories,
+                    "publish_reason": item.publish_reason,
+                    "business_purpose": item.business_purpose,
+                    "applicant": {
+                        "employee_no": getattr(requester, "employee_no", None),
+                        "department": getattr(requester, "department", None),
+                        "position": getattr(requester, "position", None),
+                        "permission_level": getattr(requester, "permission_level", None),
+                    },
+                },
+                context={
+                    "document": {
+                        "file_name": getattr(document, "file_name", None),
+                        "knowledge_space": getattr(document, "knowledge_space", None),
+                        "security_level": getattr(document, "security_level", None),
+                        "content_preview": (getattr(document, "content_text", None) or "")[:4000],
+                    }
+                },
+            )
+        )
+        item.ai_suggestion = result.suggestion
+        item.ai_risk_level = result.risk_level
+        item.ai_reason = result.reason.strip()[:2000]
+        self.db.commit()
+        self.db.refresh(item)
+        return {
+            "suggestion": item.ai_suggestion,
+            "risk_level": item.ai_risk_level,
+            "reason": item.ai_reason,
+        }
 
     def review_request(self, request_id: str, approve: bool, reviewer: AuthenticatedUser, review_comment: str | None = None) -> KnowledgePublishRequest:
         item = self.get_request(request_id)

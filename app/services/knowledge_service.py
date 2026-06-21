@@ -32,6 +32,7 @@ from app.services.storage import calculate_sha256, save_local_temp
 from app.services.task_service import TaskService
 from app.services.knowledge_admin import KnowledgeAdminService
 from app.services.agent_recommender import AgentRecommender
+from app.services.auth import AuthenticatedUser
 
 settings = get_settings()
 
@@ -67,10 +68,19 @@ class KnowledgeService:
         stmt = select(Document).where(Document.document_id == document_id).options(selectinload(Document.chunks))
         return self.db.execute(stmt).scalar_one_or_none()
 
-    def delete_document(self, document_id: str) -> Document:
+    def delete_document(self, document_id: str, user: AuthenticatedUser) -> Document:
         document = self.get_document(document_id)
         if document is None:
             raise ValidationAppError("document not found")
+        is_owner = bool(document.owner_user_id and document.owner_user_id == user.user_id)
+        is_admin = bool({"admin", "reviewer"}.intersection(user.roles))
+        if not is_owner:
+            if (document.knowledge_space or "personal").lower() == "personal" and document.owner_user_id:
+                if is_admin:
+                    raise PermissionAppError("管理员不能删除其他用户的个人知识")
+                raise PermissionAppError("只能删除自己创建的文档")
+            if not is_admin:
+                raise PermissionAppError("只能删除自己创建的文档")
         self.db.delete(document)
         self.db.commit()
         return document

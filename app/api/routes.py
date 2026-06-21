@@ -26,7 +26,7 @@ from app.schemas.common import APIResponse
 from app.schemas.conversation import ConversationTurnCreate, ConversationTurnRead
 from app.schemas.evaluation import EvaluationCaseCreate, EvaluationCaseRead, EvaluationRunCreate, EvaluationRunRead, EvaluationResultRead
 from app.schemas.flywheel import KnowledgeGapCreate, KnowledgeGapRecord, KnowledgeGapReview, LearningAnalysisRead, LearningGapDraftCreate, LearningGapDraftRead, LearningGapDraftReview
-from app.schemas.knowledge import AIAccessReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgeFilterOptions, KnowledgeMergeReviewRequest, KnowledgeMergeScanRequest, KnowledgeMergeSuggestionRead, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, ManualKnowledgeCreate, PublicKnowledgeRefRead, PublicKnowledgeSuggestionCreate, PublicKnowledgeSuggestionRead, PublicKnowledgeSuggestionReview, SearchRequest, SearchResponse
+from app.schemas.knowledge import AIAccessReviewResponse, AIPublishReviewResponse, AccessCheckResponse, AccessRequestCreate, AccessRequestRead, AccessReviewRequest, ChatRequest, ChunkItem, DocumentCreateResponse, DocumentDetail, DocumentItem, FeedbackCreate, KnowledgeExpansionRequest, KnowledgeExpansionResponse, KnowledgeFilterOptions, KnowledgeMergeReviewRequest, KnowledgeMergeScanRequest, KnowledgeMergeSuggestionRead, KnowledgePublishRequestCreate, KnowledgePublishRequestRead, KnowledgePublishReviewRequest, ManualKnowledgeCreate, PublicKnowledgeRefRead, PublicKnowledgeSuggestionCreate, PublicKnowledgeSuggestionRead, PublicKnowledgeSuggestionReview, SearchRequest, SearchResponse
 from app.schemas.observability import AlertEventRead, AlertRuleCreate, AlertRuleRead, MetricSnapshotCreate
 from app.schemas.review import ReviewRequest
 from app.schemas.task import TaskRead
@@ -186,9 +186,9 @@ def _access_request_response(item, access: DocumentAccessService | None = None) 
         business_purpose=item.business_purpose,
         expected_duration=item.expected_duration,
         status=item.status,
-        ai_suggestion=item.ai_suggestion,
-        ai_risk_level=item.ai_risk_level,
-        ai_reason=item.ai_reason,
+        ai_suggestion=getattr(item, "ai_suggestion", None),
+        ai_risk_level=getattr(item, "ai_risk_level", None),
+        ai_reason=getattr(item, "ai_reason", None),
         reviewed_by=item.reviewed_by,
         review_comment=item.review_comment,
         reviewed_at=item.reviewed_at.isoformat() if item.reviewed_at else None,
@@ -215,6 +215,9 @@ def _publish_request_response(item, service: KnowledgePublishService | None = No
         publish_reason=item.publish_reason,
         business_purpose=item.business_purpose,
         status=item.status,
+        ai_suggestion=getattr(item, "ai_suggestion", None),
+        ai_risk_level=getattr(item, "ai_risk_level", None),
+        ai_reason=getattr(item, "ai_reason", None),
         reviewed_by=item.reviewed_by,
         review_comment=item.review_comment,
         reviewed_at=item.reviewed_at.isoformat() if item.reviewed_at else None,
@@ -617,9 +620,9 @@ def get_document(document_id: str, db: Session = Depends(get_db), user=Depends(g
 
 
 @router.delete("/documents/{document_id}", response_model=APIResponse[dict[str, Any]])
-def delete_document(document_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_roles("admin"))):
+def delete_document(document_id: str, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user)):
     try:
-        document = KnowledgeService(db).delete_document(document_id)
+        document = KnowledgeService(db).delete_document(document_id, user)
         AuditService(db).record(user_id=user.user_id, action="delete_document", resource_type="document", resource_id=document.document_id, trace_id=_trace_id_from_request(request), payload={"file_name": document.file_name})
         return APIResponse(data={"document_id": document_id, "deleted": True})
     except Exception as exc:
@@ -946,6 +949,24 @@ def list_admin_publish_requests(status: str | None = Query(default=None, pattern
     service = KnowledgePublishService(db)
     items = service.list_requests(status=status)
     return APIResponse(data=[_publish_request_response(item, service) for item in items])
+
+
+@router.post("/admin/publish-requests/{request_id}/ai-review", response_model=APIResponse[AIPublishReviewResponse])
+def run_publish_request_ai_review(request_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_roles("admin", "reviewer"))):
+    try:
+        service = KnowledgePublishService(db)
+        result = service.build_ai_review(request_id)
+        AuditService(db).record(
+            user_id=user.user_id,
+            action="ai_review_publish_request",
+            resource_type="publish_request",
+            resource_id=request_id,
+            trace_id=_trace_id_from_request(request),
+            payload=result,
+        )
+        return APIResponse(data=AIPublishReviewResponse(request_id=request_id, **result))
+    except Exception as exc:
+        _handle_app_error(exc)
 
 
 @router.post("/admin/publish-requests/{request_id}/review", response_model=APIResponse[KnowledgePublishRequestRead])

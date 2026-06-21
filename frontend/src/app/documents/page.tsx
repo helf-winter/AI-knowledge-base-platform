@@ -359,6 +359,12 @@ export default function DocumentsPage() {
   const currentUserId = getCurrentUserId();
   const currentUserRoles = getCurrentUserRoles();
   const isAdminUser = currentUserRoles.includes('admin') || currentUserRoles.includes('reviewer');
+
+  function canDeleteDocument(document: DocumentItem) {
+    if (document.owner_user_id && document.owner_user_id === currentUserId) return true;
+    if (document.knowledge_space === 'personal' && document.owner_user_id) return false;
+    return isAdminUser;
+  }
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1113,7 +1119,9 @@ export default function DocumentsPage() {
                         {selectedParseTask.progress_total ? ` · ${selectedParseTask.progress_current || 0}/${selectedParseTask.progress_total}` : ''}
                       </div>
                       {(selectedParseTask.detail || selectedParseTask.error_message) && (
-                        <div className="mt-2 rounded-lg bg-white/80 p-3 text-blue-900">{selectedParseTask.error_message || selectedParseTask.detail}</div>
+                        <div className="mt-2 rounded-lg bg-white/80 p-3 text-blue-900">
+                          {selectedParseTask.error_message || (selectedParseTask.status === 'succeeded' ? '解析完成' : selectedParseTask.detail)}
+                        </div>
                       )}
                       {tasksLoading && <div className="mt-2 text-xs text-blue-700">正在刷新解析状态...</div>}
                       {['failed', 'stalled'].includes(selectedParseTask.status) && (
@@ -1160,27 +1168,29 @@ export default function DocumentsPage() {
                         提交公有审核 <Send size={14} />
                       </Button>
                     )}
-                    <Button
-                      variant="destructive"
-                      className="w-full"
-                      onClick={async () => {
-                        const ok = confirm(`确定删除文档“${selectedDocument.file_name}”吗？此操作不可恢复。`);
-                        if (!ok) return;
-                        try {
-                          const res = await authedFetch(`${API_BASE}/api/v1/documents/${selectedDocument.document_id}`, { method: 'DELETE' });
-                          if (!res.ok) {
-                            const text = await res.text().catch(() => '');
-                            throw new Error(text || '删除失败');
+                    {canDeleteDocument(selectedDocument) && (
+                      <Button
+                        variant="destructive"
+                        className="w-full"
+                        onClick={async () => {
+                          const ok = confirm(`确定删除文档“${selectedDocument.file_name}”吗？此操作不可恢复。`);
+                          if (!ok) return;
+                          try {
+                            const res = await authedFetch(`${API_BASE}/api/v1/documents/${selectedDocument.document_id}`, { method: 'DELETE' });
+                            if (!res.ok) {
+                              const text = await res.text().catch(() => '');
+                              throw new Error(text || '删除失败');
+                            }
+                            await load();
+                            setSelectedDocId(null);
+                          } catch (error) {
+                            alert(error instanceof Error ? error.message : '删除失败');
                           }
-                          await load();
-                          setSelectedDocId(null);
-                        } catch (error) {
-                          alert(error instanceof Error ? error.message : '删除失败');
-                        }
-                      }}
-                    >
-                      <Trash2 size={14} /> 删除文档
-                    </Button>
+                        }}
+                      >
+                        <Trash2 size={14} /> 删除文档
+                      </Button>
+                    )}
                   </div>
                 </>
               ) : (

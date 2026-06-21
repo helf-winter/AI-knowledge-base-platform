@@ -63,6 +63,9 @@ type PublishRequest = {
   publish_reason: string;
   business_purpose: string;
   status: 'pending' | 'approved' | 'rejected';
+  ai_suggestion?: string | null;
+  ai_risk_level?: string | null;
+  ai_reason?: string | null;
   reviewed_by?: string | null;
   review_comment?: string | null;
   reviewed_at?: string | null;
@@ -160,6 +163,15 @@ async function fetchPublishRequests(status: string) {
   if (!res.ok) throw new Error(res.status === 403 ? '当前账号无权访问发布审核' : '加载发布申请失败');
   const json = await res.json();
   return (json.data ?? []) as PublishRequest[];
+}
+
+async function runPublishAiReview(requestId: string) {
+  const res = await authedFetch(`${API_BASE}/api/v1/admin/publish-requests/${requestId}/ai-review`, { method: 'POST' });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || '生成发布 AI 审核建议失败');
+  }
+  return res.json();
 }
 
 async function reviewPublishRequest(requestId: string, approve: boolean, reviewComment: string) {
@@ -340,6 +352,7 @@ export default function AdminPage() {
   const [publishStatus, setPublishStatus] = useState('pending');
   const [selectedPublishId, setSelectedPublishId] = useState<string | null>(null);
   const [publishLoading, setPublishLoading] = useState(false);
+  const [publishAiLoadingId, setPublishAiLoadingId] = useState<string | null>(null);
   const [publishReviewingId, setPublishReviewingId] = useState<string | null>(null);
   const [publishReviewComment, setPublishReviewComment] = useState('');
   const [knowledgeSuggestions, setKnowledgeSuggestions] = useState<KnowledgeSuggestion[]>([]);
@@ -924,6 +937,47 @@ export default function AdminPage() {
                     <div className="text-xs font-medium text-slate-500">业务用途</div>
                     <p className="mt-1 text-sm leading-7 text-slate-900">{selectedPublishRequest.business_purpose}</p>
                   </div>
+                </div>
+                <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2 text-sm font-medium text-blue-900"><Bot size={16} /> AI 辅助审核</div>
+                      <p className="mt-1 text-xs text-blue-700">AI 仅提供建议，最终由管理员决定。</p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={selectedPublishRequest.status !== 'pending' || publishAiLoadingId === selectedPublishRequest.request_id}
+                      onClick={async () => {
+                        try {
+                          setPublishAiLoadingId(selectedPublishRequest.request_id);
+                          const result = await runPublishAiReview(selectedPublishRequest.request_id);
+                          const aiReview = result.data as { suggestion: string; risk_level: string; reason: string };
+                          setPublishRequests((current) => current.map((item) => item.request_id === selectedPublishRequest.request_id
+                            ? { ...item, ai_suggestion: aiReview.suggestion, ai_risk_level: aiReview.risk_level, ai_reason: aiReview.reason }
+                            : item));
+                        } catch (error) {
+                          alert(error instanceof Error ? error.message : '生成发布 AI 审核建议失败');
+                        } finally {
+                          setPublishAiLoadingId(null);
+                        }
+                      }}
+                    >
+                      <Bot size={14} /> {publishAiLoadingId === selectedPublishRequest.request_id ? '分析中...' : selectedPublishRequest.ai_suggestion ? '重新生成 AI 建议' : '生成 AI 审核建议'}
+                    </Button>
+                  </div>
+                  {selectedPublishRequest.ai_suggestion ? (
+                    <div className="mt-4 space-y-3">
+                      <div className="flex flex-wrap gap-2">
+                        <Badge className="bg-white text-blue-700 hover:bg-white">建议：{suggestionLabel(selectedPublishRequest.ai_suggestion)}</Badge>
+                        <Badge className={riskClass(selectedPublishRequest.ai_risk_level)}>风险：{riskLevelLabel(selectedPublishRequest.ai_risk_level)}</Badge>
+                      </div>
+                      <p className="text-sm leading-6 text-slate-800">{selectedPublishRequest.ai_reason || 'AI 未返回明确理由，请人工复核。'}</p>
+                    </div>
+                  ) : (
+                    <p className="mt-4 text-sm text-slate-600">尚未生成 AI 审核建议。</p>
+                  )}
                 </div>
                 <Textarea value={publishReviewComment} onChange={(event) => setPublishReviewComment(event.target.value)} placeholder="填写发布审核意见" className="bg-white text-slate-900 placeholder:text-slate-400" />
                 <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">

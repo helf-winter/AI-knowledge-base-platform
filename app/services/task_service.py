@@ -65,6 +65,7 @@ class TaskService:
         task.stage = "completed"
         if task.progress_total:
             task.progress_current = task.progress_total
+        task.detail = "解析完成"
         task.error_message = None
         self.db.commit()
         self.db.refresh(task)

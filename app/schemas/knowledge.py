@@ -213,6 +213,13 @@ class AIAccessReviewResponse(BaseModel):
     reason: str
 
 
+class AIPublishReviewResponse(BaseModel):
+    request_id: str
+    suggestion: str
+    risk_level: str
+    reason: str
+
+
 class KnowledgePublishRequestCreate(BaseModel):
     document_id: str = Field(min_length=1, max_length=36)
     target_category: str = Field(min_length=1, max_length=128)
@@ -234,6 +241,9 @@ class KnowledgePublishRequestRead(BaseModel):
     publish_reason: str
     business_purpose: str
     status: str
+    ai_suggestion: str | None = None
+    ai_risk_level: str | None = None
+    ai_reason: str | None = None
     reviewed_by: str | None = None
     review_comment: str | None = None
     reviewed_at: str | None = None

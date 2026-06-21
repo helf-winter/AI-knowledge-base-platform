@@ -36,6 +36,7 @@ class LargeFileBackgroundParsingTest(unittest.TestCase):
         self.assertIn("retryDocumentParsing", page)
         self.assertIn("解析进度", page)
         self.assertIn("继续解析", page)
+        self.assertIn("selectedParseTask.status === 'succeeded' ? '解析完成'", page)
 
     def test_document_detail_loads_primary_document_before_optional_panels(self) -> None:
         page = (ROOT / "frontend" / "src" / "app" / "documents" / "[document_id]" / "page.tsx").read_text(encoding="utf-8")
